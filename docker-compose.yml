@@ -1,0 +1,32 @@
+services:
+  kana-quiz:
+    build: .
+    image: kana-quiz:latest
+    container_name: kana-quiz
+    restart: unless-stopped
+    expose:
+      - "8000"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/data
+      # Google Cloud TTS auth (optional). Drop a service-account key (with the
+      # Cloud Text-to-Speech API enabled on your GCP project) at
+      # ./secrets/gcp-tts.json, then in .env set:
+      #   GOOGLE_APPLICATION_CREDENTIALS=/secrets/gcp-tts.json
+      #   KANA_TTS_GCP_PROJECT=your-gcp-project-id
+      # Without these the app still runs; audio just degrades to 503
+      # (speaker button hidden), exactly like the old no-OPENAI_API_KEY path.
+      - ./secrets:/secrets:ro
+    networks:
+      - web
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/').read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  web:
+    external: true

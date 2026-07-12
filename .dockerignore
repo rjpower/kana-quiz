@@ -1,0 +1,28 @@
+.git
+.gitignore
+.venv
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Local dev artifacts — rebuilt inside the image.
+frontend/node_modules
+frontend/dist
+node_modules
+data/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
+# Editor / OS junk
+.DS_Store
+.idea
+.vscode
+
+# Docs / meta we don't need inside the image
+README.md
+scripts/
