@@ -49,6 +49,27 @@ DEFAULT_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3-flash-preview")
 # — flash hallucinated the kana of the typed answer on one of them.
 GRADER_MODEL = os.environ.get("GEMINI_GRADER_MODEL", "gemini-3.1-flash-lite")
 
+# The google-genai SDK defaults http_options.timeout to None — i.e. it waits
+# forever for a response. These calls run synchronously inside FastAPI's
+# bounded worker-thread pool, so a stalled connection doesn't just delay one
+# request: the wedged thread is never reclaimed, and a handful of them saturate
+# the pool until even fast endpoints queue behind them. That is the app-wide
+# "hang on certain transitions". Every call therefore gets a finite ceiling.
+#
+# NOTE: the SDK forwards http_options.timeout to the API as a *server-side
+# deadline*, and the Gemini API rejects any deadline under 10s with a 400
+# ("Minimum allowed deadline is 10s"). So 10_000ms is the practical floor — we
+# cannot set a tighter cap here even though the frontend aborts each attempt at
+# 6s (FETCH_TIMEOUT_MS in frontend/src/stores/session.ts). What this ceiling
+# buys is bounded, self-clearing failure instead of a permanent wedge: a
+# stalled grade now dies at 10s and frees its worker thread, rather than
+# holding it forever and (with the client's retries) marching the pool to
+# saturation. _GRADE_TIMEOUT_MS is the floor value for the user-facing
+# typed-answer graders; _CLIENT_TIMEOUT_MS is the looser default for background
+# work (sentence generation + the prefetch worker).
+_CLIENT_TIMEOUT_MS = int(os.environ.get("GEMINI_TIMEOUT_MS", "30000"))
+_GRADE_TIMEOUT_MS = int(os.environ.get("GEMINI_GRADE_TIMEOUT_MS", "10000"))
+
 # How many sentence requests the prefetch worker is allowed to have in
 # flight at once. Override via env for rate-limit tuning. Sequential
 # (=1) is safe; ~8 is comfortable on paid tier without tripping the
@@ -144,8 +165,15 @@ def _get_client() -> object:
         # Lazy import keeps the SDK off the hot path for installs that
         # don't use sentence generation (e.g. CI without network).
         from google import genai
+        from google.genai import types
 
-        _client = genai.Client(api_key=key)
+        # A default request timeout so a stalled Gemini connection can never
+        # hang a worker thread indefinitely (see _CLIENT_TIMEOUT_MS). The
+        # user-facing grader path overrides this per-call with a tighter cap.
+        _client = genai.Client(
+            api_key=key,
+            http_options=types.HttpOptions(timeout=_CLIENT_TIMEOUT_MS),
+        )
     return _client
 
 
@@ -937,6 +965,10 @@ def grade_semantic(
                 thinking_config=types.ThinkingConfig(
                     thinking_level=types.ThinkingLevel.MINIMAL,
                 ),
+                # Bound the user-facing grade at the API's 10s deadline floor
+                # (see _GRADE_TIMEOUT_MS) so a stalled grade dies and frees its
+                # worker thread instead of hanging the pool indefinitely.
+                http_options=types.HttpOptions(timeout=_GRADE_TIMEOUT_MS),
             ),
         )
         text = (resp.text or "").strip()
@@ -1112,6 +1144,9 @@ def grade_translation(
                 thinking_config=types.ThinkingConfig(
                     thinking_level=types.ThinkingLevel.MINIMAL,
                 ),
+                # Same tight cap as grade_semantic — this is the listening-mode
+                # answer path and is subject to the same client abort/retry.
+                http_options=types.HttpOptions(timeout=_GRADE_TIMEOUT_MS),
             ),
         )
         text = (resp.text or "").strip()
