@@ -343,6 +343,19 @@ const DRILL_ATTEMPT_CAP = 6
 const BATCH_SIZE = 5
 const BATCH_REFILL_AT = 2
 
+// A short tail of recently-served word_ids that stays in the batch exclude set
+// even after the card has left the on-screen `current` / buffer. A just-
+// answered card leaves heldIds() immediately, but its SRS reschedule (the
+// fire-and-forget answer POST) may not have committed yet — so a prefetch
+// refill firing right after the swap can re-pick the same (word, direction)
+// while the server still sees due_at <= now, and it resurfaces a few cards
+// later. Carrying this tail closes that race: the client always knows what it
+// just showed, even before the server processes the answer. Sized well above
+// BATCH_SIZE (so the race window is always covered) yet far below the ~10 min
+// relearn step measured in cards (so a genuinely missed card can still come
+// back on schedule).
+const RECENT_SERVE_WINDOW = 10
+
 // Drill auto-advance dwell for a correct-but-slow rep. Long enough to register
 // the amber "too slow" flash, but the user never taps Continue just for being
 // slow — the card re-queues itself and moves on. Wrong drill answers still hold
@@ -474,6 +487,15 @@ export const useSessionStore = defineStore('session', () => {
   // wait for the queue to drain before showing the round summary so the
   // server-side SRS state is consistent with what the user sees.
   const pendingAnswers: Promise<unknown>[] = []
+  // FIFO of the last RECENT_SERVE_WINDOW word_ids put on screen. Feeds the
+  // batch exclude set (see excludeIds) so a refill can't re-serve a card whose
+  // answer POST is still in flight. Cleared on round start / reset so a fresh
+  // round never inherits stale exclusions that could starve a small due pile.
+  const recentServed: number[] = []
+  function rememberServed(wordId: number) {
+    recentServed.push(wordId)
+    while (recentServed.length > RECENT_SERVE_WINDOW) recentServed.shift()
+  }
   const deckEmpty = ref(false)
   const flash = ref<'green' | 'red' | null>(null)
   const lastOutcome = ref<AnswerResult | null>(null)
@@ -723,14 +745,22 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   // Word_ids the client already holds — the on-screen card plus everything
-  // buffered. Passed as the batch's exclude set so a refill never re-serves a
-  // word we're already about to show (and, like the old prefetch, so the card
-  // just answered doesn't reappear next).
+  // buffered — so a refill never re-serves a word we're already about to show.
+  // Note this forgets a card the instant it's answered (it leaves `current`);
+  // preventing an in-flight-reschedule re-serve is excludeIds/recentServed's
+  // job, not this function's.
   function heldIds(): number[] {
     const ids: number[] = []
     if (current.value) ids.push(current.value.word_id)
     for (const q of prefetchBuffer.value) ids.push(q.word_id)
     return ids
+  }
+
+  // The full batch exclude set: everything in hand plus the recently-served
+  // tail. Using this (rather than bare heldIds) is what keeps a refill from
+  // re-serving a card whose reschedule hasn't landed yet — see recentServed.
+  function excludeIds(): number[] {
+    return Array.from(new Set([...heldIds(), ...recentServed]))
   }
 
   function batchUrl(excludeIds: number[], n: number): string {
@@ -753,13 +783,13 @@ export const useSessionStore = defineStore('session', () => {
     if (need <= 0) return
     refillPromise = (async () => {
       try {
-        const resp = await fetchWithRetry(batchUrl(heldIds(), need), {}, 2)
+        const resp = await fetchWithRetry(batchUrl(excludeIds(), need), {}, 2)
         if (resp.status === 204 || !resp.ok) return
         const batch = (await resp.json()) as { questions: NextQuestion[] }
         // A refill that lands after the round ended / entered the drill must not
         // seed the buffer for a session that's over.
         if (!roundStarted.value || roundComplete.value || drillMode.value) return
-        const held = new Set(heldIds())
+        const held = new Set(excludeIds())
         for (const q of batch.questions) {
           if (held.has(q.word_id)) continue
           prefetchBuffer.value.push(q)
@@ -799,10 +829,10 @@ export const useSessionStore = defineStore('session', () => {
     try {
       if (prefetchBuffer.value.length === 0) {
         // Cold: pull a fresh batch synchronously before we can show anything.
-        const resp = await fetchWithRetry(batchUrl(heldIds(), BATCH_SIZE))
+        const resp = await fetchWithRetry(batchUrl(excludeIds(), BATCH_SIZE))
         if (resp.status !== 204 && resp.ok) {
           const batch = (await resp.json()) as { questions: NextQuestion[] }
-          const held = new Set(heldIds())
+          const held = new Set(excludeIds())
           for (const q of batch.questions) {
             if (held.has(q.word_id)) continue
             prefetchBuffer.value.push(q)
@@ -837,6 +867,7 @@ export const useSessionStore = defineStore('session', () => {
         return
       }
       current.value = prefetchBuffer.value.shift()!
+      rememberServed(current.value.word_id)
       deckEmpty.value = false
     } catch {
       // All retries exhausted — surface a recoverable error rather than
@@ -1406,6 +1437,7 @@ export const useSessionStore = defineStore('session', () => {
     roundStarted.value = true
     current.value = null
     prefetchBuffer.value = []
+    recentServed.length = 0
     startRoundFlame()
     void prefetchUpcomingAudio()
     void fetchNext()
@@ -1686,6 +1718,7 @@ export const useSessionStore = defineStore('session', () => {
   function reset() {
     current.value = null
     prefetchBuffer.value = []
+    recentServed.length = 0
     deckEmpty.value = false
     flash.value = null
     lastOutcome.value = null
