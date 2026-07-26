@@ -22,7 +22,7 @@ DEFAULT_THRESHOLD = 80
 ARTICLE_RE = re.compile(r"^(to\s+|a\s+|an\s+|the\s+)")
 WHITESPACE_RE = re.compile(r"\s+")
 TRAILING_PUNCT_RE = re.compile(r"[\s\.,;:!?]+$")
-MEANING_SPLIT_RE = re.compile(r"\s*[/;,]\s*")
+MEANING_SEPARATORS = "/;,"
 PAREN_RE = re.compile(r"\s*\([^)]*\)\s*")
 CLOZE_STRIPPABLE_SUFFIXES = (
     "ください",
@@ -65,6 +65,43 @@ def normalize_english(s: str) -> str:
     return s
 
 
+def split_meanings(english: str) -> list[str]:
+    """Split on ``/;,`` at paren depth zero only.
+
+    Disambiguated glosses carry their distinguishing hint in a trailing
+    parenthetical (``"order (sequence, arrangement)"``). A naive split
+    would cut that in half and leave ``"order (sequence"``, which has no
+    closing paren for :data:`PAREN_RE` to strip — so the bare ``"order"``
+    the user actually types would never be accepted.
+    """
+    out: list[str] = []
+    depth = 0
+    cur: list[str] = []
+    for ch in english:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        if ch in MEANING_SEPARATORS and depth == 0:
+            out.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+    out.append("".join(cur))
+    return [p for p in (s.strip() for s in out) if p]
+
+
+def gloss_core(english: str) -> str:
+    """The gloss with its disambiguating parenthetical removed, normalized.
+
+    ``"order (a command)"`` and ``"order (sequence)"`` share the core
+    ``"order"``. Two such words make a coin-flip multiple-choice card, so
+    the distractor picker dedups on this rather than the full string.
+    """
+    first = split_meanings(english)
+    return normalize_english(PAREN_RE.sub(" ", first[0])) if first else ""
+
+
 def accepted_meanings(english: str) -> list[str]:
     """Split a vocabulary entry's English field into accepted synonyms.
 
@@ -75,7 +112,7 @@ def accepted_meanings(english: str) -> list[str]:
     """
     out: list[str] = []
     seen: set[str] = set()
-    for raw in MEANING_SPLIT_RE.split(english):
+    for raw in split_meanings(english):
         for variant in (raw, PAREN_RE.sub(" ", raw)):
             n = normalize_english(variant)
             if n and n not in seen:

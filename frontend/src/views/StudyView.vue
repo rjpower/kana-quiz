@@ -79,6 +79,18 @@ const accuracyPct = computed(() => {
   const a = overview.value?.accuracy_last_7_days
   return a == null ? null : Math.round(a * 100)
 })
+
+// Disambiguated glosses carry their distinguishing hint in a trailing
+// parenthetical ("order (a command)"). Rendering the whole thing at the
+// 48px prompt size wraps to three lines on a phone, so split it: the core
+// keeps the display size, the hint sits under it in muted small type. Only
+// a trailing "(...)" is treated this way — anything else renders as-is.
+const PROMPT_HINT_RE = /^(.*\S)\s*\(([^()]+)\)$/
+const promptParts = computed<{ core: string; hint: string | null }>(() => {
+  const raw = store.current?.prompt ?? ''
+  const m = PROMPT_HINT_RE.exec(raw)
+  return m ? { core: m[1], hint: m[2] } : { core: raw, hint: null }
+})
 const medianSecs = computed(() => {
   const ms = overview.value?.median_latency_ms
   return ms == null ? null : (ms / 1000).toFixed(1)
@@ -1229,7 +1241,10 @@ const fanfare = computed(() => {
         />
         <template v-else>{{ store.current.sentence_japanese }}</template>
       </h1>
-      <h1 v-else class="prompt">{{ store.current.prompt }}</h1>
+      <h1 v-else class="prompt">
+        {{ promptParts.core }}
+        <span v-if="promptParts.hint" class="prompt-hint">{{ promptParts.hint }}</span>
+      </h1>
       <button
         v-if="!store.audioDisabled && store.current.mode !== 'sentence_listen'"
         class="audio-btn"
@@ -1511,6 +1526,16 @@ const fanfare = computed(() => {
   margin: 0;
   text-align: center;
   font-weight: 600;
+}
+.prompt-hint {
+  display: block;
+  font-size: clamp(13px, 2.2vw, 16px);
+  font-weight: 400;
+  line-height: 1.3;
+  color: var(--muted);
+  margin-top: 6px;
+  max-width: 22em;
+  margin-inline: auto;
 }
 .audio-btn {
   background: var(--panel-hi);

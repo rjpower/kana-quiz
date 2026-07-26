@@ -1,11 +1,22 @@
 <script setup lang="ts">
-defineProps<{
+import { computed } from 'vue'
+
+const props = defineProps<{
   label: string
   index: number
   state: 'idle' | 'correct' | 'wrong' | 'reveal'
   disabled: boolean
 }>()
 defineEmits<{ (e: 'pick', index: number): void }>()
+
+// English glosses carry their disambiguating hint in a trailing
+// parenthetical ("order (a command)"). Under a countdown the user scans the
+// core first, so keep it at full size and demote the hint to a second line.
+const PARTS_RE = /^(.*\S)\s*\(([^()]+)\)$/
+const parts = computed<{ core: string; hint: string | null }>(() => {
+  const m = PARTS_RE.exec(props.label)
+  return m ? { core: m[1], hint: m[2] } : { core: props.label, hint: null }
+})
 </script>
 
 <template>
@@ -16,7 +27,10 @@ defineEmits<{ (e: 'pick', index: number): void }>()
     @click="$emit('pick', index)"
   >
     <span class="choice-key">{{ index + 1 }}</span>
-    <span class="choice-label">{{ label }}</span>
+    <span class="choice-label">
+      {{ parts.core }}
+      <span v-if="parts.hint" class="choice-hint">{{ parts.hint }}</span>
+    </span>
   </button>
 </template>
 
@@ -38,6 +52,14 @@ defineEmits<{ (e: 'pick', index: number): void }>()
 }
 .choice:hover:not(:disabled) { background: #2b3140; }
 .choice:disabled { cursor: default; }
+.choice-label { min-width: 0; }
+.choice-hint {
+  display: block;
+  font-size: 13px;
+  line-height: 1.3;
+  color: var(--muted);
+  margin-top: 2px;
+}
 .choice-key {
   display: inline-grid;
   place-items: center;

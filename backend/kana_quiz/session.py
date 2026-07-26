@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
-from kana_quiz.grading import normalize_english
+from kana_quiz.grading import gloss_core
 from kana_quiz.models import Word, is_katakana_only, word_from_row
 from kana_quiz.task_state import (
     CARD_TASKS,
@@ -1109,9 +1109,14 @@ def build_choices(
     # that render the same string (ただ vs だけ, both "only"; はし vs はし) would
     # produce two identical options, one marked right and one wrong. Dedup every
     # distractor on that rendered string, seeded with the target's own label.
+    #
+    # For ja2en we dedup on the gloss *core*, not the full string: disambiguated
+    # glosses differ only in their trailing parenthetical, and offering both
+    # "order (a command)" and "order (sequence)" on one card is a coin flip
+    # dressed up as discrimination.
     def label_of(w: Word) -> str:
         if direction == "ja2en":
-            return normalize_english(w.english)
+            return gloss_core(w.english)
         return (w.kana or "").strip()
 
     used_labels: set[str] = {label_of(target)}

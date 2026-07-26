@@ -41,6 +41,35 @@ machine.
   (the conjugated surface form for the cloze blank).
 - `audio_cache` — TTS MP3 blobs, keyed on `(text, voice, model)`.
 
+## Gloss format — `words.english` is load-bearing
+
+The English gloss is both the ja→en *answer* and the en→ja *prompt*, so
+it has to be unique across the deck or the en→ja card is unanswerable.
+The convention is `core gloss (disambiguator)`:
+
+    命令  order (a command)
+    順序  order (sequence)
+    保存  preservation (of food or a file)
+
+- **A trailing `(...)` is stripped before grading** (`PAREN_RE` in
+  `grading.py`), so the user only ever has to type the core. It exists
+  to disambiguate the en→ja prompt and to teach the nuance. A *mid*-string
+  paren is an inline placeholder instead (`to get (something) done with`)
+  and is stripped the same way.
+- **Verbs must start with `to `.** `session.py:_is_verb` keys off that
+  prefix to keep verb distractors away from noun cards.
+- **No `,` `;` or `/` inside a gloss** — `split_meanings()` treats them as
+  synonym separators at paren depth zero.
+- ja→en multiple choice dedups distractors on `gloss_core()` (the
+  paren-stripped core), so one card never offers two `order (…)` options.
+- Rewriting a gloss? Demote the old one into `word_alternates`
+  (`direction='ja2en'`, normalized) so answers that used to grade correct
+  still do. `scripts/gloss_chunks.py` → LLM pass → `scripts/gloss_apply.py`
+  does this end to end; `scripts/gloss_collisions.py` catches duplicates
+  introduced by parallel workers. Past passes are tagged in
+  `word_alternates.source`: `gloss-tighten`, `gloss-audit`,
+  `gloss-rigorize`.
+
 ## Conventions
 
 - All picker queries filter `w.ignored_at IS NULL`. New

@@ -54,6 +54,21 @@ def test_ja2en_parenthetical_clarifier_accepted() -> None:
     assert grade_typed("visit", word, "ja2en") is True
 
 
+def test_separators_inside_parenthetical_do_not_split() -> None:
+    # Disambiguated glosses ("order (sequence, arrangement)") put a comma
+    # inside the clarifier. Splitting there would strand "order (sequence"
+    # with no closing paren to strip, so the bare core would never match.
+    assert accepted_meanings("order (sequence, arrangement)") == [
+        "order (sequence, arrangement)",
+        "order",
+    ]
+
+
+def test_ja2en_bare_core_of_disambiguated_gloss_accepted() -> None:
+    word = make_word(english="order (a command, an instruction)")
+    assert grade_typed("order", word, "ja2en") is True
+
+
 def test_ja2en_one_of_many_synonyms_accepted() -> None:
     word = make_word(english="somewhat, a little, more or less")
     assert grade_typed("a little", word, "ja2en") is True

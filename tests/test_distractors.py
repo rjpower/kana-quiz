@@ -5,7 +5,7 @@ import sqlite3
 
 import pytest
 
-from kana_quiz.grading import normalize_english
+from kana_quiz.grading import gloss_core, normalize_english
 from kana_quiz.models import word_from_row
 from kana_quiz.session import build_choices
 
@@ -199,6 +199,55 @@ def mixed_pos_deck(tmp_path, monkeypatch):
         )
     yield conn
     conn.close()
+
+
+@pytest.fixture
+def disambiguated_gloss_deck(tmp_path, monkeypatch):
+    """Deck where several glosses share a core and differ only in the hint.
+
+    The rigorized deck splits 順/注文/命令 into "order (…)" variants. Seating
+    two of them on one ja2en card would be a coin flip, so dedup has to work
+    on the core, not the full displayed string.
+    """
+    from kana_quiz.db import connect, init_schema
+
+    path = tmp_path / "db.sqlite"
+    monkeypatch.setenv("KANA_QUIZ_DB", str(path))
+    init_schema()
+    conn = connect()
+    deck_id = conn.execute(
+        "SELECT id FROM decks WHERE name = 'Default'"
+    ).fetchone()["id"]
+    rows = [
+        ("じゅん", "order (relative sequence or ranking)", "noun"),
+        ("ちゅうもん", "order (placing an order for goods)", "noun"),
+        ("めいれい", "order (a command)", "noun"),
+        ("じゅんじょ", "order (sequence)", "noun"),
+        ("いぬ", "dog", "noun"),
+        ("ねこ", "cat", "noun"),
+        ("やま", "mountain", "noun"),
+        ("うみ", "sea", "noun"),
+    ]
+    for kana, english, tag in rows:
+        conn.execute(
+            "INSERT INTO words (kana, english, tags, deck_id) VALUES (?, ?, ?, ?)",
+            (kana, english, tag, deck_id),
+        )
+    yield conn
+    conn.close()
+
+
+def test_ja2en_choices_never_repeat_a_gloss_core(disambiguated_gloss_deck):
+    """Two "order (…)" options on one card is a coin flip, not discrimination."""
+    conn = disambiguated_gloss_deck
+    target = word_from_row(_target_row(conn, "めいれい"))
+    for seed in range(50):
+        choices = build_choices(
+            conn, target, direction="ja2en",
+            target_interval_days=0.0, rng=random.Random(seed),
+        )
+        cores = [gloss_core(c.english) for c in choices]
+        assert len(cores) == len(set(cores)), f"duplicate core at seed {seed}: {cores}"
 
 
 def test_verb_target_gets_only_verb_distractors(mixed_pos_deck):
