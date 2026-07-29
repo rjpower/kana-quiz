@@ -800,6 +800,22 @@ def _record_task_result(
     )
     _upsert_task_state(conn, word_id, task, nxt, introduced_at)
 
+    # A recall word counts as introduced the moment the user answers *either*
+    # direction — the picker hands both rows out with introduced_at NULL and
+    # leaves the stamping to us (see pick_next_card). The upsert above only
+    # touches the direction just answered, so without this the untouched
+    # sibling would keep a NULL introduced_at and, since every due query
+    # filters on IS NOT NULL, would never be served again.
+    if task in CARD_TASKS:
+        conn.execute(
+            """
+            UPDATE task_state
+               SET introduced_at = ?
+             WHERE word_id = ? AND task IN (?, ?) AND introduced_at IS NULL
+            """,
+            (now.isoformat(), word_id, *CARD_TASKS),
+        )
+
     # Snooze the sibling recall direction so the same word doesn't immediately
     # resurface in the other direction. Recall lanes only (supplemental tasks
     # have no sibling). The CASE guard only ever pushes due_at *forward* — a

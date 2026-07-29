@@ -207,6 +207,7 @@ def _overview(conn: sqlite3.Connection) -> StatsOverview:
            AND NOT EXISTS (
              SELECT 1 FROM task_state ts
               WHERE ts.word_id = w.id AND ts.task IN (?, ?)
+                AND ts.introduced_at IS NOT NULL
            )
         """,
         CARD_TASKS,

@@ -36,6 +36,16 @@ def _introduced_ids(db_path: Path) -> set[int]:
     return {r[0] for r in rows}
 
 
+def _reserved_ids(db_path: Path) -> set[int]:
+    """Words with recall rows at all — dealt, whether or not yet introduced."""
+    conn = sqlite3.connect(db_path)
+    rows = conn.execute(
+        "SELECT DISTINCT word_id FROM task_state WHERE task IN ('en2ja', 'ja2en')"
+    ).fetchall()
+    conn.close()
+    return {r[0] for r in rows}
+
+
 def _seed_learning(db_path: Path, word_ids: list[int], *, hours_out: int = 1) -> None:
     """Introduce ``word_ids`` as in-learning cards due ``hours_out`` from now."""
     conn = sqlite3.connect(db_path)
@@ -78,10 +88,14 @@ def test_gate_allows_new_below_limit(
     _seed_learning(db_path, seed)
 
     q = loaded_client.get("/api/session/next").json()
-    # backlog (3) < limit (4) -> introduce a fresh word.
+    # backlog (3) < limit (4) -> deal a fresh word.
     assert q.get("introduction") is not None
     assert q["word_id"] not in seed
-    assert len(_introduced_ids(db_path)) == 4
+    # Dealing reserves both recall rows but does not introduce: introduced_at
+    # is stamped when the user answers, so the introduced set is still the
+    # seeded three until then.
+    assert _introduced_ids(db_path) == set(seed)
+    assert _reserved_ids(db_path) == set(seed) | {q["word_id"]}
 
 
 def test_gate_does_not_starve_empty_queue(

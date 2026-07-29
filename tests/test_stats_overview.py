@@ -13,14 +13,32 @@ from fastapi.testclient import TestClient
 
 
 def _introduce(client: TestClient, n: int) -> list[int]:
-    """Introduce n new words via the new pool without answering, return ids."""
+    """Introduce n new words via the new pool and answer each, returning ids.
+
+    Answering is what makes a word introduced — the picker deals cards ahead of
+    the user into a prefetch buffer and leaves ``introduced_at`` NULL until one
+    comes back answered, so merely fetching a card would leave these words in
+    the "new" pool and count for nothing here.
+    """
     seen: list[int] = []
     for _ in range(n):
         ex = "&exclude=" + ",".join(map(str, seen)) if seen else ""
         r = client.get(f"/api/session/next?pool=new{ex}")
         if r.status_code != 200:
             break
-        seen.append(r.json()["word_id"])
+        q = r.json()
+        client.post(
+            "/api/session/answer",
+            json={
+                "word_id": q["word_id"],
+                "direction": q["direction"],
+                "chosen_index": q["correct_index"],
+                "correct_index": q["correct_index"],
+                "timed_out": False,
+                "latency_ms": 1200,
+            },
+        )
+        seen.append(q["word_id"])
     return seen
 
 
@@ -47,10 +65,13 @@ def test_overview_new_available_drops_after_introduction(
     ov = loaded_client.get("/api/stats/overview").json()
     assert ov["introduced"] == 3
     assert ov["new_available"] == 7
-    # Introduced-but-not-answered words are in the "new" recall state → learning.
+    # One correct answer takes a lane to repetitions=1 / interval>=1d, and the
+    # rollup buckets a word by its *most* mature lane — so these land in young,
+    # not learning, even though each word's other lane is still untouched.
     tiers = {t["maturity"]: t for t in ov["maturity"]}
-    assert tiers["learning"]["count"] == 3
-    assert tiers["learning"]["avg_ease"] is not None
+    assert tiers["young"]["count"] == 3
+    assert tiers["young"]["avg_ease"] is not None
+    assert tiers["learning"]["count"] == 0
     assert tiers["new"]["count"] == 7
 
 

@@ -42,6 +42,12 @@ def _force_only_due_for_direction(
                 """,
                 (r[0], d, near, near),
             )
+    # OR IGNORE skips rows the picker already reserved, and those carry a NULL
+    # introduced_at until the user answers. Row-exists is not introduced-ness,
+    # so stamp them or the introduction branch stays alive after all.
+    conn.execute(
+        "UPDATE task_state SET introduced_at = ? WHERE introduced_at IS NULL", (near,)
+    )
     conn.execute("UPDATE task_state SET due_at = ?", (far,))
     conn.execute(
         "UPDATE task_state SET due_at = ? WHERE word_id = ? AND task = ?",

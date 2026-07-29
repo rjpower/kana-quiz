@@ -160,6 +160,13 @@ def test_semantic_grader_correct_persists_alternates(
                 """,
                 (r[0], direction_seed, now_iso, now_iso),
             )
+    # OR IGNORE skips rows the picker already reserved, and those carry a
+    # NULL introduced_at until the user answers. Row-exists is not
+    # introduced-ness, so stamp them to really introduce every word.
+    conn.execute(
+        "UPDATE task_state SET introduced_at = ? WHERE introduced_at IS NULL",
+        (now_iso,),
+    )
     conn.execute(
         "UPDATE task_state SET repetitions = 2, ease = 2.5, due_at = '2020-01-01T00:00:00+00:00' "
         "WHERE word_id = ?",
@@ -222,6 +229,13 @@ def _seed_typeable_card(conn_path: Path, word_id: int) -> None:
                 """,
                 (r[0], direction_seed, now_iso, now_iso),
             )
+    # OR IGNORE skips rows the picker already reserved, and those carry a
+    # NULL introduced_at until the user answers. Row-exists is not
+    # introduced-ness, so stamp them to really introduce every word.
+    conn.execute(
+        "UPDATE task_state SET introduced_at = ? WHERE introduced_at IS NULL",
+        (now_iso,),
+    )
     conn.execute(
         "UPDATE task_state SET repetitions = 2, ease = 2.5, "
         "due_at = '2020-01-01T00:00:00+00:00' WHERE word_id = ?",

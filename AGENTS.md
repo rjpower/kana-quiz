@@ -34,6 +34,16 @@ machine.
   base recall ramp; `cloze` and `sentence_listen` are supplemental
   tracks that **unlock** once base recall ease/reps cross thresholds
   but then have their own independent SRS state.
+- `introduced_at` is stamped on the first **answer**, not when the picker
+  hands a card out. A `task_state` row can exist with `introduced_at IS
+  NULL`: that means "dealt, never seen". Treat *introduced* as
+  `introduced_at IS NOT NULL` everywhere — never as "a row exists". The
+  picker runs ahead of the user (`/session/batch` deals several cards into
+  a client-side buffer), so a round abandoned mid-buffer leaves rows behind
+  for cards that never reached the screen; stamping at pick time used to
+  send those to the user as *reviews* of material they had never met.
+  Answering either recall direction stamps both, since the answer route
+  only advances the one lane it was given.
 - `reviews` — append-only log of every answered question. Don't
   retro-edit; downstream analytics rely on it.
 - `sentence_cache` — Gemini-generated example sentences. One per

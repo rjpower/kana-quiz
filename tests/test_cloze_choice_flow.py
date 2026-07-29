@@ -30,6 +30,13 @@ def _seed_only_card(db: Path, word_id: int, ease: float, reps: int) -> None:
                 """,
                 (wid, d, now_iso, now_iso),
             )
+    # OR IGNORE skips rows the picker already reserved, and those carry a
+    # NULL introduced_at until the user answers. Row-exists is not
+    # introduced-ness, so stamp them to really introduce every word.
+    conn.execute(
+        "UPDATE task_state SET introduced_at = ? WHERE introduced_at IS NULL",
+        (now_iso,),
+    )
     conn.execute(
         "UPDATE task_state SET ease = ?, repetitions = ?, due_at = ? "
         "WHERE word_id = ? AND task = 'en2ja'",

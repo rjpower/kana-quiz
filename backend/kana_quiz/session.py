@@ -265,10 +265,18 @@ def pick_next_card(
 
     Due-now cards (introduced, ``due_at <= now``) take priority in mixed/review.
     In mixed, if fewer than :data:`NEW_WORD_TARGET_AT_ONCE` cards are due in the
-    next few minutes we introduce a brand-new word — both recall task rows get
-    stamped with ``introduced_at = now`` so they enter the rotation, and the new
-    word debuts in the *recognition* direction (ja→en) so meaning is learned
-    before production (see the receptive→productive progression).
+    next few minutes we introduce a brand-new word, debuting it in the
+    *recognition* direction (ja→en) so meaning is learned before production
+    (see the receptive→productive progression).
+
+    Handing out a new word creates both recall rows but leaves their
+    ``introduced_at`` NULL; the answer route stamps them on the first answer.
+    This matters because the picker runs *ahead* of the user — ``/session/batch``
+    deals up to a dozen cards into a client-side buffer, and a round abandoned
+    mid-buffer used to leave the undealt remainder marked introduced-and-due.
+    Those words then surfaced in the next **review** session, which is supposed
+    to serve only material the user has actually met. Deferring the stamp keeps
+    "introduced" meaning "the user answered it at least once".
 
     ``exclude_ids`` are word_ids the client already has in hand (the on-screen
     card, plus anything already buffered by the bulk-prefetch batch). Both
@@ -286,7 +294,16 @@ def pick_next_card(
     now = _now()
     now_iso = now.isoformat()
 
-    excl_clause, excl_params = _word_set_exclusion_clause("ts", exclude_ids or set())
+    excl_clause, excl_params = _word_set_exclusion_clause(
+        "ts.word_id", exclude_ids or set()
+    )
+    # The new-word query selects from `words`, so it needs the exclusion keyed on
+    # a different column. It genuinely needs one now: a word the picker has
+    # handed out but the user hasn't answered is still "unseen" (see below), so
+    # without this a single batch could deal the same fresh word n times.
+    new_excl_clause, new_excl_params = _word_set_exclusion_clause(
+        "w.id", exclude_ids or set()
+    )
 
     due_row = conn.execute(
         f"""
@@ -383,19 +400,28 @@ def pick_next_card(
     # deck in import order, which front-loaded whatever the CSV happened to list
     # first (e.g. a run of katakana loanwords); random within-level keeps the
     # level progression while giving a varied mix from the get-go.
+    # "Unseen" means no recall row that has actually been *introduced* — not
+    # merely no row at all. The picker seeds rows at hand-out time (it has to:
+    # both directions are created together, and the answer path only ever
+    # touches the direction being answered), but leaves introduced_at NULL
+    # until the user answers. A word that was dealt into a prefetch buffer and
+    # never reached the screen therefore stays in this pool instead of being
+    # stranded with rows nothing will ever query.
     new_word_row = (
         conn.execute(
-            """
+            f"""
             SELECT w.* FROM words w
              LEFT JOIN decks d ON d.id = w.deck_id
              WHERE w.ignored_at IS NULL
                AND NOT EXISTS (
                SELECT 1 FROM task_state ts
                 WHERE ts.word_id = w.id AND ts.task IN ('en2ja', 'ja2en')
-             )
+                  AND ts.introduced_at IS NOT NULL
+             ){new_excl_clause}
              ORDER BY COALESCE(d.level, 999) ASC, RANDOM()
              LIMIT 1
-            """
+            """,
+            new_excl_params,
         ).fetchone()
         if mode == "new" or NEW_WORD_BACKLOG_LIMIT <= 0 or backlog < NEW_WORD_BACKLOG_LIMIT
         else None
@@ -417,23 +443,28 @@ def pick_next_card(
             else (TASK_EN2JA, TASK_JA2EN)
         )
         for direction in directions:
+            # introduced_at stays NULL until the user answers (the answer route
+            # stamps every recall row for the word). Until then these rows exist
+            # only to reserve the pair of directions; every due/backlog query
+            # filters on introduced_at IS NOT NULL, so an unanswered card cannot
+            # leak into a review session as though it had already been studied.
+            # ON CONFLICT because a previous session may have dealt this same
+            # word and never had it answered.
             conn.execute(
                 """
                 INSERT INTO task_state
                   (word_id, task, ease, interval_days, repetitions,
                    due_at, introduced_at)
-                VALUES (?, ?, 2.5, 0, 0, ?, ?)
+                VALUES (?, ?, 2.5, 0, 0, ?, NULL)
+                ON CONFLICT(word_id, task) DO NOTHING
                 """,
-                (word_id, direction, now_iso, now_iso),
+                (word_id, direction, now_iso),
             )
         # Recognition-first: debut a new word in ja→en (recognition) when that
         # direction exists, so the learner meets the word's meaning before being
         # asked to produce it. Katakana-only loanwords have only en→ja, so they
         # fall through to that.
         chosen_dir: Direction = TASK_JA2EN if TASK_JA2EN in directions else directions[0]
-        # No exclude guard needed here: introductions only fire for words with
-        # zero recall task rows, and the excluded word is by definition one
-        # that already has task_state (it was just being shown to the user).
         return CardPick(
             word=word_from_row(new_word_row),
             direction=chosen_dir,
@@ -491,13 +522,18 @@ def _word_exclusion_clause(
 
 
 def _word_set_exclusion_clause(
-    alias: str, ids: set[int]
+    column: str, ids: set[int]
 ) -> tuple[str, tuple[int, ...]]:
-    """Return a SQL snippet excluding a *set* of word ids (``NOT IN``)."""
+    """Return a SQL snippet excluding a *set* of word ids (``NOT IN``).
+
+    ``column`` is a fully-qualified reference rather than a table alias: the
+    word id is ``task_state.word_id`` in the due queries but ``words.id`` in
+    the new-word query, and both need excluding.
+    """
     if not ids:
         return "", ()
     placeholders = ",".join("?" for _ in ids)
-    return f" AND {alias}.word_id NOT IN ({placeholders})", tuple(ids)
+    return f" AND {column} NOT IN ({placeholders})", tuple(ids)
 
 
 def pick_match_batch(
@@ -547,7 +583,7 @@ def pick_match_batch(
                 return True
         return False
 
-    excl_clause, excl_params = _word_set_exclusion_clause("ts", excluded)
+    excl_clause, excl_params = _word_set_exclusion_clause("ts.word_id", excluded)
     fetch_limit = (n + len(excluded) + 1) * 2
 
     due_rows = conn.execute(
@@ -567,7 +603,7 @@ def pick_match_batch(
 
     # Recompute exclusion now that due-now words have been consumed, then top
     # up from the soonest-due introduced cards (any due_at).
-    excl_clause, excl_params = _word_set_exclusion_clause("ts", excluded)
+    excl_clause, excl_params = _word_set_exclusion_clause("ts.word_id", excluded)
     reuse_rows = conn.execute(
         f"""
         SELECT ts.* FROM task_state ts
@@ -931,6 +967,7 @@ def peek_upcoming(conn: sqlite3.Connection, n: int) -> list[int]:
                AND NOT EXISTS (
                SELECT 1 FROM task_state ts
                 WHERE ts.word_id = w.id AND ts.task IN ('en2ja', 'ja2en')
+                  AND ts.introduced_at IS NOT NULL
              )
              ORDER BY w.id ASC
              LIMIT ?
