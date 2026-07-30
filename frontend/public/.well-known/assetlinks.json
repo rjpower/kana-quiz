@@ -1,0 +1,8 @@
+[{
+      "relation": ["delegate_permission/common.handle_all_urls"],
+      "target": {
+        "namespace": "android_app",
+        "package_name": "io.rjp.kana",
+        "sha256_cert_fingerprints": ["FE:19:43:83:FC:64:52:32:42:08:8D:F8:39:57:EF:EA:1E:35:12:14:4A:48:A2:07:FD:7D:6F:82:31:52:43:D6"]
+      }
+    }]

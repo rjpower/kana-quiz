@@ -1,0 +1,49 @@
+{
+  "packageId": "io.rjp.kana",
+  "host": "kana.rjp.io",
+  "name": "Kana Quiz",
+  "launcherName": "Kana",
+  "display": "standalone",
+  "themeColor": "#7C3AED",
+  "themeColorDark": "#0F0F1E",
+  "navigationColor": "#0F0F1E",
+  "navigationColorDark": "#0F0F1E",
+  "navigationDividerColor": "#0F0F1E",
+  "navigationDividerColorDark": "#000000",
+  "backgroundColor": "#0F0F1E",
+  "enableNotifications": false,
+  "startUrl": "/",
+  "iconUrl": "https://kana.rjp.io/icon-512.png",
+  "maskableIconUrl": "https://kana.rjp.io/icon-512-maskable.png",
+  "splashScreenFadeOutDuration": 300,
+  "signingKey": {
+    "path": "/home/power/.android-keys/kana-quiz.keystore",
+    "alias": "kana"
+  },
+  "appVersionName": "1.0.0",
+  "appVersionCode": 1,
+  "shortcuts": [],
+  "generatorApp": "bubblewrap-cli",
+  "webManifestUrl": "https://kana.rjp.io/manifest.webmanifest",
+  "fallbackType": "customtabs",
+  "features": {},
+  "alphaDependencies": {
+    "enabled": false
+  },
+  "enableSiteSettingsShortcut": true,
+  "isChromeOSOnly": false,
+  "isMetaQuest": false,
+  "fullScopeUrl": "https://kana.rjp.io/",
+  "minSdkVersion": 23,
+  "orientation": "portrait",
+  "fingerprints": [
+    {
+      "name": "release",
+      "value": "FE:19:43:83:FC:64:52:32:42:08:8D:F8:39:57:EF:EA:1E:35:12:14:4A:48:A2:07:FD:7D:6F:82:31:52:43:D6"
+    }
+  ],
+  "additionalTrustedOrigins": [],
+  "retainedBundles": [],
+  "displayOverride": [],
+  "appVersion": "1.0.0"
+}
