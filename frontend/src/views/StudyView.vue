@@ -537,19 +537,30 @@ function choiceState(idx: number): 'idle' | 'correct' | 'wrong' | 'reveal' {
 const roundProgress = computed(() => (store.roundAnswered / store.activeRoundSize) * 100)
 // Quick-fire progress. The label counts *words remaining* (distinct words not
 // yet cleared) so it reads "14 left -> 0 left". The BAR, though, fills on every
-// good rep, not just full clears — otherwise it sat frozen through the entire
-// first pass (each word needs DRILL_REQUIRED_REPS reps, so nothing "clears"
-// until the second lap) and looked stuck. Credit = full for words that have
-// left the queue, partial (capped at the requirement) for in-flight words,
-// de-duped by word_id so the brief dwell where a just-cleared word is both in
-// drillResults and still drillCurrent doesn't double-count.
+// rep that moves a word closer, not just full clears — otherwise it sat frozen
+// through the entire first pass (each word needs DRILL_REQUIRED_REPS reps, so
+// nothing "clears" until the second lap) and looked stuck.
+//
+// A word clears on TWO counts — enough correct reps AND enough of them fast —
+// so its credit is driven by whichever is further away. Crediting goodReps
+// alone would let the bar march to full while a word still had zero fast reps
+// and was nowhere near leaving the queue, which is the same "bar lies about the
+// remaining work" bug in the other direction. Fast reps are a subset of correct
+// ones, so this never over-credits.
+//
+// De-duped by word_id: the brief dwell where a just-cleared word is both in
+// drillResults and still drillCurrent must not count twice.
 const drillRemaining = computed(() =>
   Math.max(0, store.drillInitialCount - store.drillResults.length),
 )
 const drillProgress = computed(() => {
   const reps = store.drillReps
+  const fastNeeded = store.drillFastReps
   const total = store.drillInitialCount * reps
   if (total === 0) return 0
+  // Reps still owed before this word can leave, expressed on the `reps` scale.
+  const owed = (goodReps: number, fastReps: number) =>
+    Math.min(reps, Math.max(0, reps - goodReps, fastNeeded - fastReps))
   const counted = new Set<number>()
   let credit = 0
   for (const r of store.drillResults) {
@@ -560,11 +571,11 @@ const drillProgress = computed(() => {
   for (const it of store.drillQueue) {
     if (counted.has(it.word_id)) continue
     counted.add(it.word_id)
-    credit += Math.min(it.goodReps, reps)
+    credit += reps - owed(it.goodReps, it.fastReps)
   }
   const cur = store.drillCurrent
   if (cur && !counted.has(cur.word_id)) {
-    credit += Math.min(cur.goodReps, reps)
+    credit += reps - owed(cur.goodReps, cur.fastReps)
   }
   return Math.min(100, (credit / total) * 100)
 })
@@ -640,7 +651,7 @@ const drillByWord = computed(() => {
 function clearedTitle(wordId: number): string {
   const r = drillByWord.value.get(wordId)
   if (!r) return ''
-  if (r.fastCleared) return 'Cleared under the speed bar in the quick-fire'
+  if (r.fastCleared) return 'Cleared the quick-fire at speed, repeatedly'
   if (r.cleared) return 'Cleared via the attempt cap in the quick-fire'
   return 'Still shaky — moved on after the attempt cap'
 }
@@ -979,7 +990,8 @@ const fanfare = computed(() => {
             <span class="answer-type-label">Replay to fluency after a round</span>
             <span class="answer-type-hint">
               Quick-fire the round’s misses (and every card in a new-cards session)
-              until you can clear each one fast.
+              until you can clear each one fast — {{ store.drillFastReps }}× over,
+              so the speed has to reproduce.
             </span>
           </span>
         </label>

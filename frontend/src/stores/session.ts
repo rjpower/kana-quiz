@@ -343,14 +343,21 @@ export interface FlameEvent {
 }
 
 // Speed-gated mastery replay: a missed word graduates only after it's answered
-// correctly DRILL_REQUIRED_REPS times with at least one of those reps under the
-// speed bar — the user has to demonstrate it twice, once quickly, so a single
-// lucky or slow tap doesn't clear a genuine miss. The cap is the escape hatch —
-// after this many *attempts* a plain correct graduates it (flagged not-fast) so
-// a user who genuinely can't hit the bar isn't trapped. Bumped a notch above
-// the old single-rep cap to leave room for the extra required rep.
+// correctly DRILL_REQUIRED_REPS times, of which at least DRILL_REQUIRED_FAST_REPS
+// beat the speed bar — the user has to demonstrate it repeatedly *and* quickly,
+// so a single lucky or slow tap doesn't clear a genuine miss. The cap is the
+// escape hatch — after this many *attempts* a plain correct graduates it
+// (flagged not-fast) so a user who genuinely can't hit the bar isn't trapped.
 export const DRILL_REQUIRED_REPS = 2
-const DRILL_ATTEMPT_CAP = 6
+// One fast rep proves the user can retrieve it quickly once; that's as easily a
+// lucky guess as recall. Requiring two means the speed has to reproduce, which
+// is the thing that distinguishes cemented knowledge from a fresh look-up.
+// Clamped against the user's rep setting below — asking for two fast reps when
+// only one rep is required to clear would be unsatisfiable.
+export const DRILL_REQUIRED_FAST_REPS = 2
+// Raised with the fast requirement: the escape hatch has to stay reachable, and
+// two fast reps take more attempts to land than one.
+const DRILL_ATTEMPT_CAP = 8
 
 // Bulk prefetch: how many upcoming questions to buffer client-side, and the
 // low-water mark that triggers a background refill. A single /session/batch
@@ -386,22 +393,23 @@ const RECENT_SERVE_WINDOW = 10
 // re-queues so the cap can fire. `direction` is pinned to the direction the
 // word was missed in, so the quick-fire re-tests the SAME recall direction it
 // re-queues — never flipping E→J / J→E between attempts. `goodReps` counts the
-// correct answers so far and `hadFast` records whether any of them beat the
-// speed bar; a word clears once it has DRILL_REQUIRED_REPS good reps with at
-// least one fast (see _drillSubmit) — one lucky tap no longer masters it.
+// correct answers so far and `fastReps` how many of those beat the speed bar; a
+// word clears once it has enough of both (see _drillSubmit) — one lucky tap no
+// longer masters it, and neither does a run of correct-but-laboured ones.
 export interface DrillItem {
   word_id: number
   prompt: string
   attempts: number
   direction: Direction
   goodReps: number
-  hadFast: boolean
+  fastReps: number
 }
 
 // A drill word that has left the queue. `cleared` = answered correctly on its
-// final attempt (mastered, possibly via the cap). `fastCleared` = cleared under
-// the speed bar. A word the user never got right is force-dropped at the cap
-// with both false, so the loop always terminates.
+// final attempt (mastered, possibly via the cap). `fastCleared` = met the
+// fast-rep requirement rather than limping out via the attempt cap. A word the
+// user never got right is force-dropped at the cap with both false, so the loop
+// always terminates.
 export interface DrillResult {
   word_id: number
   prompt: string
@@ -665,6 +673,13 @@ export const useSessionStore = defineStore('session', () => {
     drillReps.value = n
     persistSetting(DRILL_REPS_KEY, n)
   }
+  // Fast reps needed to clear, clamped to the total reps required. Without the
+  // clamp the "1×" setting could never be satisfied: it would ask for one
+  // correct rep but two fast ones, and the word would grind to the attempt cap
+  // every time.
+  const drillFastReps = computed(() =>
+    Math.min(DRILL_REQUIRED_FAST_REPS, drillReps.value),
+  )
 
   // How many new words a focused "Learn new cards" session pulls in.
   const newCardsPerSession = ref<number>(
@@ -1335,6 +1350,34 @@ export const useSessionStore = defineStore('session', () => {
     locked.value = false
   }
 
+  // Fisher-Yates, in place. Used on the initial drill queue so a burndown isn't
+  // replayed in the order the misses happened — with a short queue that order is
+  // still fresh in the user's head, and answering in it tests sequence recall
+  // rather than the word.
+  function shuffleInPlace<T>(xs: T[]): T[] {
+    for (let i = xs.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1))
+      ;[xs[i], xs[j]] = [xs[j]!, xs[i]!]
+    }
+    return xs
+  }
+
+  // Put a word back for another rep at a random position rather than the back.
+  //
+  // Always-to-the-back turned a small queue into a strict rotation: with three
+  // words left it's A-B-C-A-B-C forever, and the user starts riding the rhythm
+  // instead of recalling. A random slot keeps the gap unpredictable, so a fast
+  // answer has to come from actually knowing the word.
+  //
+  // Never index 0 when something else is queued: that would ask the same word
+  // twice in a row, and the interleaving gap — recalling something else before
+  // coming back — is what makes the second rep worth anything.
+  function requeueDrillItem(item: DrillItem) {
+    const q = drillQueue.value
+    const idx = q.length === 0 ? 0 : 1 + Math.floor(Math.random() * q.length)
+    q.splice(idx, 0, item)
+  }
+
   async function _drillSubmit(chosen: number | null, timedOut: boolean) {
     if (!current.value || locked.value) return
     locked.value = true
@@ -1349,7 +1392,7 @@ export const useSessionStore = defineStore('session', () => {
     const prompt = item?.prompt ?? q.prompt
     const direction = item?.direction ?? q.direction
     const goodReps = (item?.goodReps ?? 0) + (correct ? 1 : 0)
-    const hadFast = (item?.hadFast ?? false) || fast
+    const fastReps = (item?.fastReps ?? 0) + (fast ? 1 : 0)
 
     const result: AnswerResult = {
       correct,
@@ -1367,28 +1410,34 @@ export const useSessionStore = defineStore('session', () => {
     applyFlameOutcome(correct, latency, fastMs)
 
     // A word leaves the queue when it's MASTERED (>= DRILL_REQUIRED_REPS correct
-    // reps with at least one fast) OR it hits the attempt cap — at the cap it's
-    // force-dropped whatever the answer, so a word the user can't get right can't
-    // loop forever. Anything else re-queues to the BACK, carrying its rep tally,
-    // so the same word isn't asked back-to-back (interleaving) and the second
-    // rep lands after the user has had to recall something else in between.
+    // reps, of which >= drillFastReps beat the speed bar) OR it hits the attempt
+    // cap — at the cap it's force-dropped whatever the answer, so a word the user
+    // can't get right can't loop forever. Anything else re-queues, carrying its
+    // rep tally.
     const reachedCap = attempts >= DRILL_ATTEMPT_CAP
-    const mastered = goodReps >= drillReps.value && hadFast
+    const enoughFast = fastReps >= drillFastReps.value
+    const mastered = goodReps >= drillReps.value && enoughFast
     const cleared = mastered || (correct && reachedCap)
     const leave = mastered || reachedCap
     if (leave) {
       drillResults.value.push({
-        word_id: q.word_id, prompt, attempts, cleared, fastCleared: hadFast, direction,
+        word_id: q.word_id, prompt, attempts, cleared, fastCleared: enoughFast, direction,
       })
     } else {
-      drillQueue.value.push({ word_id: q.word_id, prompt, attempts, direction, goodReps, hadFast })
-      // Nudge toward whatever's still missing. A fast rep earns a green "Nice —
-      // once more"; a slow one gets the amber "Too slow". (Only on a re-queue —
-      // a mastered/capped clear just advances with the success flash.)
+      requeueDrillItem({ word_id: q.word_id, prompt, attempts, direction, goodReps, fastReps })
+      // Nudge toward whatever's still missing. A fast rep earns a green "Nice";
+      // a slow one gets the amber "Too slow". (Only on a re-queue — a
+      // mastered/capped clear just advances with the success flash.)
       if (correct) {
+        const fastLeft = Math.max(0, drillFastReps.value - fastReps)
         toasts.push(
           fast
-            ? { tone: 'success', icon: '✨', main: 'Nice!', sub: 'Once more to lock it in' }
+            ? {
+                tone: 'success',
+                icon: '✨',
+                main: 'Nice!',
+                sub: fastLeft > 1 ? `${fastLeft} more fast` : 'Once more to lock it in',
+              }
             : { tone: 'warn', icon: '⏱', main: 'Too slow', sub: 'Re-queued' },
         )
       }
@@ -1434,7 +1483,7 @@ export const useSessionStore = defineStore('session', () => {
       seen.add(a.word_id)
       items.push({
         word_id: a.word_id, prompt: a.prompt, attempts: 0,
-        direction: a.direction, goodReps: 0, hadFast: false,
+        direction: a.direction, goodReps: 0, fastReps: 0,
       })
     }
     return items
@@ -1449,7 +1498,10 @@ export const useSessionStore = defineStore('session', () => {
       roundComplete.value = true
       return
     }
-    drillQueue.value = items
+    // Shuffled here rather than in buildDrillItems(): that one also backs the
+    // `drillPendingCount` computed, and a computed that reorders its result on
+    // every read is a trap waiting to be stepped in.
+    drillQueue.value = shuffleInPlace(items)
     drillResults.value = []
     drillInitialCount.value = items.length
     drillPoolIds.value = items.map((i) => i.word_id)
@@ -1848,6 +1900,7 @@ export const useSessionStore = defineStore('session', () => {
     setBurndownEnabled,
     drillReps,
     setDrillReps,
+    drillFastReps,
     newCardsPerSession,
     setNewCardsPerSession,
     sessionMode,
