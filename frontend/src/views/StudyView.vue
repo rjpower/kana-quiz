@@ -1433,16 +1433,6 @@ const fanfare = computed(() => {
          feedback (the "accept" grader verdict — passing, but with a
          note explaining the related word the user actually typed).
          Pristine-correct answers auto-advance and don't render this. -->
-    <div
-      v-if="store.drillMode && store.locked && store.drillNote && store.lastOutcome?.correct"
-      class="drill-note"
-      :class="store.drillNote.tone"
-      role="status"
-    >
-      <span class="drill-note-icon" aria-hidden="true">{{ store.drillNote.tone === 'good' ? '✨' : '⏱' }}</span>
-      <span class="drill-note-main">{{ store.drillNote.main }}</span>
-      <span class="drill-note-sub">{{ store.drillNote.sub }}</span>
-    </div>
     <button
       v-if="showContinue"
       class="btn primary continue-btn"
@@ -1698,61 +1688,6 @@ const fanfare = computed(() => {
    card auto-advances (no Continue tap). Two tones: `.good` (fast, green — one
    more to lock it in) and `.slow` (amber — clear it faster, with a single
    shake). Replaces the old quiet speed-note paragraph. */
-.drill-note {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  margin-top: 14px;
-  padding: 12px 16px;
-  border-radius: 10px;
-  text-align: center;
-  transform-origin: center;
-  animation: drill-note-pop 0.32s cubic-bezier(0.2, 1.4, 0.4, 1) both;
-}
-.drill-note.slow {
-  background: linear-gradient(160deg, rgba(255, 179, 71, 0.18), rgba(255, 138, 40, 0.1));
-  border: 1px solid rgba(255, 179, 71, 0.5);
-  color: #ffce8a;
-  animation: drill-note-pop 0.32s cubic-bezier(0.2, 1.4, 0.4, 1) both,
-    too-slow-shake 0.4s ease-in-out 0.3s 1;
-}
-.drill-note.good {
-  background: linear-gradient(160deg, rgba(46, 204, 113, 0.2), rgba(39, 174, 96, 0.1));
-  border: 1px solid rgba(46, 204, 113, 0.5);
-  color: #a8ecc4;
-}
-.drill-note-icon { font-size: 26px; line-height: 1; }
-.drill-note-main {
-  font-size: 20px;
-  font-weight: 800;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-}
-.drill-note.slow .drill-note-main {
-  color: #ffd98a;
-  text-shadow: 0 0 12px rgba(255, 150, 40, 0.5);
-}
-.drill-note.good .drill-note-main {
-  color: #b6f2cf;
-  text-shadow: 0 0 12px rgba(46, 204, 113, 0.5);
-}
-.drill-note-sub {
-  font-size: 12px;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-@keyframes drill-note-pop {
-  0% { transform: scale(0.7); opacity: 0; }
-  100% { transform: scale(1); opacity: 1; }
-}
-@keyframes too-slow-shake {
-  0%, 100% { transform: translateX(0); }
-  25% { transform: translateX(-5px); }
-  75% { transform: translateX(5px); }
-}
-
 /* Answer feedback ring-flash — a quick glow around the question card. Green
    celebrates a correct answer; a subtler red marks a miss. Absolutely
    positioned over the card (pointer-events off) so it never blocks a tap or
@@ -1850,8 +1785,6 @@ const fanfare = computed(() => {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .drill-note,
-  .drill-note.slow,
   .answer-burst.good,
   .answer-burst.bad,
   .mult-pop-enter-active,

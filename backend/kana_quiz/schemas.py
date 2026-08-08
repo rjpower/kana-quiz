@@ -5,6 +5,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from kana_quiz.srs import MaturityBucket
+
 Direction = Literal["en2ja", "ja2en"]
 QuestionMode = Literal["mc", "type", "cloze", "cloze_choice", "sentence_listen"]
 Outcome = Literal["correct", "incorrect", "timeout", "gave_up"]
@@ -155,6 +157,12 @@ class AnswerResult(BaseModel):
     # weighs in on a typed answer (e.g. "起きる means 'wake up'; 起こす means
     # 'rouse someone'."). Always None for MC, timeouts, gave_up.
     feedback: str | None = None
+    # Where this card sits after the answer, and whether that's a promotion.
+    # The quiz toasts the bucket on every answer and only celebrates when
+    # ``maturity_up`` — so the sparkle marks an actual advance rather than
+    # firing on every correct rep. Derived, not stored.
+    maturity: MaturityBucket = "learning"
+    maturity_up: bool = False
 
 
 class Stats(BaseModel):
@@ -176,9 +184,6 @@ class LatencyBucket(BaseModel):
     lower_ms: int
     upper_ms: int | None
     count: int
-
-
-MaturityBucket = Literal["new", "learning", "young", "mature", "mastered"]
 
 
 class DirectionState(BaseModel):

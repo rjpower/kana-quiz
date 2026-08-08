@@ -163,3 +163,42 @@ def schedule(
         repetitions=0,
         due_at=now + timedelta(minutes=10),
     )
+
+
+# ---- Maturity buckets ----------------------------------------------------
+# How "learned" a card is, derived purely from its scheduler state. Lives here
+# rather than in the stats route because it is now read in two places — the
+# stats aggregates and the per-answer result the quiz UI toasts — and the two
+# must never drift apart.
+MASTERED_INTERVAL_DAYS = 21
+
+MaturityBucket = Literal["new", "learning", "young", "mature", "mastered"]
+
+# Coldest -> most mature. Index into this to compare two buckets.
+MATURITY_ORDER: tuple[MaturityBucket, ...] = (
+    "new",
+    "learning",
+    "young",
+    "mature",
+    "mastered",
+)
+
+
+def classify_maturity(
+    interval_days: float, repetitions: int, introduced: bool
+) -> MaturityBucket:
+    """Bucket a card by how far out it is scheduled.
+
+    ``repetitions == 0`` forces "learning" even when the interval looks long,
+    which is what pulls a lapsed mature card back down to the bottom: a failure
+    resets both, and the bucket should reflect that the user just missed it.
+    """
+    if not introduced:
+        return "new"
+    if repetitions == 0 or interval_days < 1.0:
+        return "learning"
+    if interval_days < 7.0:
+        return "young"
+    if interval_days < MASTERED_INTERVAL_DAYS:
+        return "mature"
+    return "mastered"

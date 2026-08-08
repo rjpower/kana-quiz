@@ -48,7 +48,13 @@ from kana_quiz.session import (
     pick_match_batch,
     pick_next_card,
 )
-from kana_quiz.srs import SrsState, review_rng, schedule
+from kana_quiz.srs import (
+    MATURITY_ORDER,
+    SrsState,
+    classify_maturity,
+    review_rng,
+    schedule,
+)
 from kana_quiz.task_state import (
     CARD_TASKS,
     TASK_CLOZE,
@@ -782,6 +788,22 @@ def _record_task_result(
     prev, introduced_at = _srs_from_row(state_row, now)
     nxt = schedule(prev, outcome, now, latency_factor=latency_factor, rng=review_rng)  # type: ignore[arg-type]
 
+    # Maturity before/after, so the client can toast the new bucket and only
+    # celebrate a genuine promotion. "Introduced" has to be read off the row as
+    # it stood *before* this answer — `_srs_from_row` hands back `now` as the
+    # introduced_at sentinel for a first sighting, which would otherwise make
+    # every new card look like it had already been introduced.
+    was_introduced = state_row is not None and state_row["introduced_at"] is not None
+    prev_maturity = classify_maturity(prev.interval_days, prev.repetitions, was_introduced)
+    maturity = classify_maturity(nxt.interval_days, nxt.repetitions, True)
+    # Gated on `correct` deliberately: missing a brand-new card still moves it
+    # new -> learning, which is a promotion by index but the opposite of
+    # something to congratulate. A celebration has to be earned by a right
+    # answer.
+    maturity_up = correct and (
+        MATURITY_ORDER.index(maturity) > MATURITY_ORDER.index(prev_maturity)
+    )
+
     conn.execute(
         """
         INSERT INTO reviews
@@ -842,6 +864,8 @@ def _record_task_result(
         ease=nxt.ease,
         expected=expected,
         feedback=feedback,
+        maturity=maturity,
+        maturity_up=maturity_up,
     )
 
 

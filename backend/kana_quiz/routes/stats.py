@@ -21,10 +21,13 @@ from kana_quiz.schemas import (
     WordState,
 )
 from kana_quiz.session import all_consecutive_failures
-from kana_quiz.srs import LEECH_FAILURE_THRESHOLD
+from kana_quiz.srs import (
+    LEECH_FAILURE_THRESHOLD,
+    MASTERED_INTERVAL_DAYS,
+    MATURITY_ORDER,
+    classify_maturity,
+)
 from kana_quiz.task_state import CARD_TASKS, TASK_EN2JA, TASK_JA2EN
-
-MASTERED_INTERVAL_DAYS = 21
 
 # Buckets chosen to span the usual 5 s question window. The final bucket is
 # open-ended so rare slow answers still show up.
@@ -42,9 +45,6 @@ LATENCY_BUCKETS_MS: tuple[tuple[int, int | None], ...] = (
     (5000, None),
 )
 
-# Maturity ordering — smaller index == less mature. Used to take the "max"
-# maturity across both directions for the top-level WordState bucket.
-_MATURITY_ORDER = ["new", "learning", "young", "mature", "mastered"]
 
 
 router = APIRouter()
@@ -140,26 +140,10 @@ def _summary(conn: sqlite3.Connection) -> Stats:
     )
 
 
-def _classify(interval_days: float, repetitions: int, introduced: bool) -> str:
-    if not introduced:
-        return "new"
-    if repetitions == 0 or interval_days < 1.0:
-        return "learning"
-    if interval_days < 7.0:
-        return "young"
-    if interval_days < MASTERED_INTERVAL_DAYS:
-        return "mature"
-    return "mastered"
-
-
 @router.get("/stats", response_model=Stats)
 def get_stats(conn: sqlite3.Connection = Depends(get_conn)) -> Stats:
     """Aggregate counts used by the Stats view."""
     return _summary(conn)
-
-
-# Tier order, coldest → most mature. Also the display order the landing bar uses.
-_TIER_ORDER = ("new", "learning", "young", "mature", "mastered")
 
 
 def _overview(conn: sqlite3.Connection) -> StatsOverview:
@@ -234,9 +218,9 @@ def _overview(conn: sqlite3.Connection) -> StatsOverview:
             per_word[r["word_id"]].append(r)
 
     introduced = 0
-    counts = {t: 0 for t in _TIER_ORDER}
-    ease_sum = {t: 0.0 for t in _TIER_ORDER}
-    ease_n = {t: 0 for t in _TIER_ORDER}
+    counts = {t: 0 for t in MATURITY_ORDER}
+    ease_sum = {t: 0.0 for t in MATURITY_ORDER}
+    ease_n = {t: 0 for t in MATURITY_ORDER}
     for lanes in per_word.values():
         word_intro = any(r["introduced_at"] is not None for r in lanes)
         if word_intro:
@@ -245,8 +229,8 @@ def _overview(conn: sqlite3.Connection) -> StatsOverview:
         eases: list[float] = []
         for r in lanes:
             intro = r["introduced_at"] is not None
-            m = _classify(r["interval_days"], r["repetitions"], intro)
-            if _MATURITY_ORDER.index(m) > _MATURITY_ORDER.index(maturity):
+            m = classify_maturity(r["interval_days"], r["repetitions"], intro)
+            if MATURITY_ORDER.index(m) > MATURITY_ORDER.index(maturity):
                 maturity = m
             if intro:
                 eases.append(r["ease"])
@@ -261,7 +245,7 @@ def _overview(conn: sqlite3.Connection) -> StatsOverview:
             count=counts[t],
             avg_ease=round(ease_sum[t] / ease_n[t], 2) if ease_n[t] else None,
         )
-        for t in _TIER_ORDER
+        for t in MATURITY_ORDER
     ]
 
     recent = conn.execute(
@@ -372,7 +356,7 @@ def get_detailed_stats(conn: sqlite3.Connection = Depends(get_conn)) -> Detailed
                 leech=False,
             )
         introduced = cs["introduced_at"] is not None
-        maturity = _classify(cs["interval_days"], cs["repetitions"], introduced)
+        maturity = classify_maturity(cs["interval_days"], cs["repetitions"], introduced)
         streak = streaks.get((word_id, direction), 0)
         return DirectionState(
             ease=cs["ease"],
@@ -393,7 +377,7 @@ def get_detailed_stats(conn: sqlite3.Connection = Depends(get_conn)) -> Detailed
         # Top-level maturity = max of the two direction maturities.
         mat = max(
             (en2ja.maturity, ja2en.maturity),
-            key=lambda m: _MATURITY_ORDER.index(m),
+            key=lambda m: MATURITY_ORDER.index(m),
         )
         maturity_counts[mat] += 1
         words.append(
@@ -412,7 +396,7 @@ def get_detailed_stats(conn: sqlite3.Connection = Depends(get_conn)) -> Detailed
     # Sort by overall maturity desc, then kana asc — same intent as before
     # (most-mature on top) but driven by the combined bucket.
     words.sort(
-        key=lambda w: (-_MATURITY_ORDER.index(w.maturity), w.kana)
+        key=lambda w: (-MATURITY_ORDER.index(w.maturity), w.kana)
     )
 
     return DetailedStats(

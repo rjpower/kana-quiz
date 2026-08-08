@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { prefetchAudioUrl, versionedAudioUrl, wordAudioUrl } from '../audio'
+import { useToastStore } from './toasts'
 
 // Mobile networks blip constantly. Every fetch in this store goes through
 // a timeout+retry wrapper so a single dropped packet can't stall the UI
@@ -222,6 +223,8 @@ export interface RubySegment {
 // leeches without an extra round-trip. Keep in sync if the backend changes.
 export const LEECH_FAILURE_THRESHOLD = 4
 
+export type Maturity = 'new' | 'learning' | 'young' | 'mature' | 'mastered'
+
 export interface AnswerResult {
   correct: boolean
   outcome: 'correct' | 'incorrect' | 'timeout' | 'gave_up'
@@ -230,6 +233,21 @@ export interface AnswerResult {
   ease: number
   expected?: string | null
   feedback?: string | null
+  // Where the card landed after this answer, and whether that's a step up.
+  // Absent on the client-synthesised results the MC fast path builds before
+  // the POST resolves — the toast fills them in when the response arrives.
+  maturity?: Maturity
+  maturity_up?: boolean
+}
+
+// Display labels for the mastery buckets. Mirrors MATURITY_ORDER in srs.py;
+// the server decides which bucket, this only names it.
+export const MATURITY_LABEL: Record<Maturity, string> = {
+  new: 'New',
+  learning: 'Learning',
+  young: 'Young',
+  mature: 'Mature',
+  mastered: 'Mastered',
 }
 
 export const QUESTION_DURATION_MS = 5000
@@ -356,15 +374,13 @@ const BATCH_REFILL_AT = 2
 // back on schedule).
 const RECENT_SERVE_WINDOW = 10
 
-// Drill auto-advance dwell for a correct-but-slow rep. Long enough to register
-// the amber "too slow" flash, but the user never taps Continue just for being
-// slow — the card re-queues itself and moves on. Wrong drill answers still hold
-// (no auto-advance) so the answer reveal stays in front of the user.
-const DRILL_SLOW_FLASH_MS = 1200
-// A fast-but-not-yet-mastered rep (first good rep, needs one more) shows the
-// green "Nice — once more" note. Brisker than the slow dwell but a beat longer
-// than a bare correct so the positive nudge actually reads before it advances.
-const DRILL_GOOD_FLASH_MS = 550
+// Correct drill reps used to dwell here — 1200ms for a slow re-queue, 550ms for
+// a fast one — purely so the inline "Too slow!" / "Nice!" panel had time to be
+// read. That made being slow cost an interruption on top of the re-queue, which
+// is the thing that felt punishing. Those notes are toasts now: they outlive the
+// card and read fine while the next question is already up, so every correct rep
+// advances at the bare FLASH_MS_CORRECT. Wrong answers still hold (no
+// auto-advance) so the reveal stays in front of the user.
 
 // One word still being drilled to mastery. `attempts` accumulates across
 // re-queues so the cap can fire. `direction` is pinned to the direction the
@@ -380,16 +396,6 @@ export interface DrillItem {
   direction: Direction
   goodReps: number
   hadFast: boolean
-}
-
-// The little callout shown when a correct drill rep re-queues (not yet
-// mastered). `tone` drives the styling: 'good' (fast, green — one more to lock
-// it in) vs 'slow' (amber — clear it faster). A mastered/capped clear shows no
-// note; it just advances.
-export interface DrillNote {
-  tone: 'good' | 'slow'
-  main: string
-  sub: string
 }
 
 // A drill word that has left the queue. `cleared` = answered correctly on its
@@ -572,10 +578,9 @@ export const useSessionStore = defineStore('session', () => {
   // The word currently on screen during the drill (shifted off the queue);
   // carries its running `attempts` count so a re-queue preserves it.
   const drillCurrent = ref<DrillItem | null>(null)
-  // Transient nudge shown on the drill reveal when a correct rep re-queues:
-  // a green "Nice — once more" (fast) or amber "Too slow" (slow). Null when the
-  // word cleared or the answer was wrong.
-  const drillNote = ref<DrillNote | null>(null)
+  // Non-blocking feedback strip. Answer verdicts, mastery promotions and the
+  // drill's "too slow" nudge all go here instead of into the card flow.
+  const toasts = useToastStore()
 
   // Set during the post-answer dwell window. The keyboard handler in
   // StudyView calls this to advance to the next question early when the
@@ -1059,6 +1064,20 @@ export const useSessionStore = defineStore('session', () => {
     // bar scales per-mode (recognition < 2s, recall < 5s).
     applyFlameOutcome(result.correct, latency, fastMsForMode(q.mode, speedPreference.value))
 
+    // Verdict toast. MC and cloze_choice are graded client-side and don't await
+    // the POST, so the mastery bucket isn't known yet — show the verdict now
+    // (feedback has to be immediate to feel connected to the tap) and fold the
+    // level in when the response lands. `toastAnswer` handles both by taking
+    // whatever it has; the async patch is a no-op once the toast has expired.
+    const toastId = toastAnswer(result)
+    if (result.maturity === undefined) {
+      void post
+        .then((r) => applyMaturityToast(toastId, r))
+        .catch(() => {
+          /* Network trouble already surfaces via networkError; nothing to add. */
+        })
+    }
+
     // The streak reported by the server is *pre-answer*, so add one if the
     // user just got it wrong (matches what the next /next call would return).
     const newStreak = result.correct ? 0 : (q.failure_streak ?? 0) + 1
@@ -1132,6 +1151,43 @@ export const useSessionStore = defineStore('session', () => {
       await startDrill()
     } else {
       roundComplete.value = true
+    }
+  }
+
+  // Verdict + mastery level as a single discreet toast. Deliberately terse: it
+  // fires on every answer, so anything longer than a couple of words would read
+  // as noise by the tenth card. The level is the sub-line because it's the part
+  // worth glancing at, not the part worth reading.
+  function toastAnswer(result: AnswerResult): number {
+    const level = result.maturity ? MATURITY_LABEL[result.maturity] : null
+    if (!result.correct) {
+      const missed =
+        result.outcome === 'timeout'
+          ? { tone: 'warn' as const, icon: '⏱', main: "Time's up" }
+          : result.outcome === 'gave_up'
+            ? { tone: 'info' as const, icon: '↷', main: 'Skipped' }
+            : { tone: 'error' as const, icon: '✕', main: 'Missed' }
+      return toasts.push({ ...missed, sub: level })
+    }
+    // A promotion leads with the new level and earns the sparkle; an ordinary
+    // correct answer just confirms and shows where the card sits.
+    return toasts.push({
+      tone: 'success',
+      icon: result.maturity_up ? '✨' : '✓',
+      main: result.maturity_up && level ? level : 'Correct',
+      sub: result.maturity_up ? 'Levelled up' : level,
+      sparkle: !!result.maturity_up,
+    })
+  }
+
+  // Late-arriving level for the client-graded fast path (see the call site).
+  function applyMaturityToast(id: number, r: AnswerResult | undefined): void {
+    if (!r?.maturity) return
+    const level = MATURITY_LABEL[r.maturity]
+    if (r.correct && r.maturity_up) {
+      toasts.update(id, { icon: '✨', main: level, sub: 'Levelled up', sparkle: true })
+    } else {
+      toasts.update(id, { sub: level })
     }
   }
 
@@ -1252,7 +1308,9 @@ export const useSessionStore = defineStore('session', () => {
     revealedIndex.value = null
     flash.value = null
     lastOutcome.value = null
-    drillNote.value = null
+    // Deliberately NOT clearing toasts here: this runs on every advance, and
+    // the whole point of moving the "too slow" nudge out of the card flow is
+    // that it survives the next question coming up. It expires on its own.
     if (drillQueue.value.length === 0) {
       drillMode.value = false
       drillCurrent.value = null
@@ -1328,28 +1386,19 @@ export const useSessionStore = defineStore('session', () => {
       // once more"; a slow one gets the amber "Too slow". (Only on a re-queue —
       // a mastered/capped clear just advances with the success flash.)
       if (correct) {
-        drillNote.value = fast
-          ? { tone: 'good', main: 'Nice!', sub: 'Once more to lock it in' }
-          : { tone: 'slow', main: 'Too slow!', sub: 'Re-queued — clear it faster' }
+        toasts.push(
+          fast
+            ? { tone: 'success', icon: '✨', main: 'Nice!', sub: 'Once more to lock it in' }
+            : { tone: 'warn', icon: '⏱', main: 'Too slow', sub: 'Re-queued' },
+        )
       }
     }
 
     // Auto-advance every *correct* drill rep so the quick-fire stays in flow —
-    // the user never taps Continue just for being slow. Only a genuine miss
-    // (wrong / timeout / gave-up) holds, keeping the answer reveal in front of
-    // them. A slow re-queue shows the amber nudge and dwells longest so it
-    // reads; a fast-but-not-yet-mastered rep shows the green "once more" for a
-    // brisk beat; a clean clear advances briskly. drillNote is only set on a
-    // correct re-queue, so slow = `correct && !fast && !leave`, good = fast one.
-    const slowRequeue = correct && !fast && !leave
-    const goodRequeue = correct && fast && !leave
-    const autoAdvanceMs = correct
-      ? slowRequeue
-        ? DRILL_SLOW_FLASH_MS
-        : goodRequeue
-          ? DRILL_GOOD_FLASH_MS
-          : FLASH_MS_CORRECT
-      : null
+    // slow or not, it advances at the same brisk pace and the toast carries the
+    // nudge. Only a genuine miss (wrong / timeout / gave-up) holds, keeping the
+    // answer reveal in front of the user.
+    const autoAdvanceMs = correct ? FLASH_MS_CORRECT : null
     await new Promise<void>((resolve) => {
       if (autoAdvanceMs !== null) {
         const timer = setTimeout(() => {
@@ -1405,7 +1454,7 @@ export const useSessionStore = defineStore('session', () => {
     drillInitialCount.value = items.length
     drillPoolIds.value = items.map((i) => i.word_id)
     drillCurrent.value = null
-    drillNote.value = null
+    toasts.clear()
     drillMode.value = true
     roundComplete.value = false
     prefetchBuffer.value = []
@@ -1420,7 +1469,7 @@ export const useSessionStore = defineStore('session', () => {
     drillCurrent.value = null
     drillQueue.value = []
     drillPoolIds.value = []
-    drillNote.value = null
+    toasts.clear()
     current.value = null
     locked.value = false
     roundComplete.value = true
@@ -1736,7 +1785,7 @@ export const useSessionStore = defineStore('session', () => {
     drillResults.value = []
     drillPoolIds.value = []
     drillCurrent.value = null
-    drillNote.value = null
+    toasts.clear()
     // Flame + session game state (bests-ever are persisted; left untouched).
     heat.value = HEAT_START
     combo.value = 0
@@ -1783,7 +1832,6 @@ export const useSessionStore = defineStore('session', () => {
     drillResults,
     drillInitialCount,
     drillCurrent,
-    drillNote,
     skipDwell,
     loadingNext,
     networkError,
