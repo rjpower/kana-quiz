@@ -9,10 +9,12 @@ interface DeckMeta {
   id: number
   name: string
   level: number
+  profile: string
   word_count: number
   new_count: number
   due_count: number
   ignored_count: number
+  archived_count: number
   created_at: string
 }
 
@@ -28,6 +30,9 @@ interface DeckWord {
   english: string
   kanji: string | null
   ignored: boolean
+  // A sprint graduate: out of rotation like an ignored card, and named
+  // cleared instead. The ignore toggle restores it.
+  archived: boolean
   en2ja: DirectionState | null
   ja2en: DirectionState | null
 }
@@ -66,6 +71,24 @@ const error = ref<string | null>(null)
 
 // Per-row toggle in-flight flag so a double-click can't fire two PATCHes.
 const toggleBusy = ref<Record<number, boolean>>({})
+
+// Sprint toggle: PATCH the deck's profile and mirror the answer locally.
+const profileBusy = ref(false)
+async function toggleSprint() {
+  if (!meta.value || profileBusy.value) return
+  profileBusy.value = true
+  const next = meta.value.profile === 'sprint' ? 'standard' : 'sprint'
+  try {
+    const resp = await fetch(`/api/decks/${meta.value.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile: next }),
+    })
+    if (resp.ok) meta.value = (await resp.json()) as DeckMeta
+  } finally {
+    profileBusy.value = false
+  }
+}
 // Filter chip — defaults to "all" so a freshly-opened deck shows the full
 // list. The user usually lands here either to skim everything or to find
 // a specific word; we don't want to hide rows until they ask.
@@ -180,11 +203,13 @@ const filtered = computed(() => {
 const counts = computed(() => {
   let active = 0
   let ignored = 0
+  let cleared = 0
   for (const w of words.value) {
-    if (w.ignored) ignored += 1
+    if (w.archived) cleared += 1
+    else if (w.ignored) ignored += 1
     else active += 1
   }
-  return { all: words.value.length, active, ignored }
+  return { all: words.value.length, active, ignored, cleared }
 })
 
 async function toggleIgnore(word: DeckWord) {
@@ -279,9 +304,20 @@ async function deleteDeck() {
             <span v-if="counts.ignored > 0">
               · {{ counts.ignored }} ignored
             </span>
+            <span v-if="counts.cleared > 0">
+              · {{ counts.cleared }} cleared 🏁
+            </span>
+            <span v-if="meta.profile === 'sprint'" class="sprint-tag">sprint</span>
           </div>
         </div>
         <div class="header-actions">
+          <RouterLink
+            class="btn primary"
+            :to="{ path: '/study', query: { deck: String(meta.id), name: meta.name } }"
+          >Study this deck</RouterLink>
+          <button class="btn ghost" type="button" :disabled="profileBusy" @click="toggleSprint">
+            {{ meta.profile === 'sprint' ? 'Make standard' : 'Make sprint' }}
+          </button>
           <button class="btn ghost" type="button" @click="startEdit">Rename</button>
           <button class="btn danger" type="button" @click="deleteDeck">Delete</button>
         </div>
@@ -456,6 +492,14 @@ async function deleteDeck() {
   align-items: flex-start;
   gap: 12px;
   flex-wrap: wrap;
+}
+.sprint-tag {
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--accent, #e8a33d);
+  color: var(--accent, #e8a33d);
+  font-size: 12px;
 }
 .deck-title { margin: 0 0 4px; font-size: 22px; }
 .header-actions { display: flex; gap: 6px; }

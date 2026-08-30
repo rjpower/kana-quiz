@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import ChoiceCard from '../components/ChoiceCard.vue'
 import ClozeChoiceCard from '../components/ClozeChoiceCard.vue'
 import ClozeInput from '../components/ClozeInput.vue'
@@ -56,8 +57,68 @@ interface Overview {
   median_latency_ms: number | null
 }
 const overview = ref<Overview | null>(null)
-const totalDue = computed(() => overview.value?.due.due_now ?? 0)
-const totalNew = computed(() => overview.value?.new_available ?? 0)
+
+// Deck-scoped session: /study?deck=<id>. The store carries the scope on
+// every session fetch; this view reads the deck's own counts so the start
+// screen gates on the deck rather than the whole collection.
+interface DeckCounts {
+  due: number
+  fresh: number
+  total: number
+  archived: number
+  profile: string
+}
+const route = useRoute()
+const deckCounts = ref<DeckCounts | null>(null)
+
+async function loadDeckCounts(id: number) {
+  try {
+    const resp = await fetch('/api/decks')
+    if (!resp.ok) return
+    const decks = (await resp.json()) as {
+      id: number
+      name: string
+      profile: string
+      word_count: number
+      new_count: number
+      due_count: number
+      archived_count: number
+    }[]
+    const deck = decks.find((d) => d.id === id)
+    if (!deck) return
+    store.setDeck(id, deck.name)
+    deckCounts.value = {
+      due: deck.due_count,
+      fresh: deck.new_count,
+      total: deck.word_count,
+      archived: deck.archived_count,
+      profile: deck.profile,
+    }
+  } catch {
+    // Non-fatal — the session still scopes; only the start-screen counts miss.
+  }
+}
+
+watch(
+  () => route.query.deck,
+  (raw) => {
+    const id = typeof raw === 'string' && raw !== '' ? Number(raw) : null
+    const valid = id != null && Number.isFinite(id) ? id : null
+    store.setDeck(valid, typeof route.query.name === 'string' ? route.query.name : '')
+    deckCounts.value = null
+    if (valid != null) void loadDeckCounts(valid)
+  },
+  { immediate: true },
+)
+
+const totalDue = computed(() =>
+  store.deckId != null ? (deckCounts.value?.due ?? 0) : (overview.value?.due.due_now ?? 0),
+)
+const totalNew = computed(() =>
+  store.deckId != null
+    ? (deckCounts.value?.fresh ?? 0)
+    : (overview.value?.new_available ?? 0),
+)
 const totalWords = computed(() => overview.value?.total_words ?? 0)
 
 // Presentation helpers for the mastery-distribution bar.
@@ -148,6 +209,8 @@ function toggleMissExpansion(rowIndex: number, wordId: number) {
 
 async function fetchSentence(wordId: number) {
   if (sentenceUnsupported.value) return
+  // A sentence card is its own example; there is nothing to conjure.
+  if (store.current?.word_id === wordId && store.current.kind === 'sentence') return
   const existing = sentences.get(wordId)
   if (existing && (existing.japanese || existing.loading)) return
   sentences.set(wordId, { loading: true })
@@ -820,9 +883,22 @@ const fanfare = computed(() => {
     v-else-if="!store.roundStarted && !store.deckEmpty"
     class="panel start"
   >
-    <h2>Ready to study?</h2>
+    <h2>{{ store.deckId != null ? 'Ready to study this deck?' : 'Ready to study?' }}</h2>
 
-    <div v-if="overview" class="study-summary">
+    <div v-if="store.deckId != null" class="deck-banner">
+      <div class="deck-banner-name">{{ store.deckName || 'Deck ' + store.deckId }}</div>
+      <div class="deck-banner-counts">
+        <span>{{ deckCounts?.due ?? 0 }} due</span>
+        <span>{{ deckCounts?.fresh ?? 0 }} new</span>
+        <span>{{ deckCounts?.total ?? 0 }} active</span>
+        <span v-if="deckCounts?.archived">{{ deckCounts.archived }} cleared 🏁</span>
+        <span v-if="deckCounts?.profile === 'sprint'" class="deck-banner-sprint">sprint deck</span>
+      </div>
+      <RouterLink :to="'/decks/' + store.deckId" class="muted">Deck details →</RouterLink>
+      <RouterLink to="/study" class="muted">Exit deck session</RouterLink>
+    </div>
+
+    <div v-if="overview && store.deckId == null" class="study-summary">
       <!-- Review lookahead: what's ready now and rolling in over the next day. -->
       <div class="due-schedule">
         <div class="due-cell" :class="{ on: overview.due.due_now > 0 }">
@@ -1147,6 +1223,7 @@ const fanfare = computed(() => {
       :class="answerBurst.tone"
       aria-hidden="true"
     ></div>
+    <div v-if="store.deckId != null" class="deck-chip">{{ store.deckName || 'deck ' + store.deckId }}</div>
     <div v-if="!store.drillMode" class="round-bar">
       <div class="round-bar-fill" :style="{ width: roundProgress + '%' }"></div>
       <span class="round-label">
@@ -1253,7 +1330,7 @@ const fanfare = computed(() => {
         />
         <template v-else>{{ store.current.sentence_japanese }}</template>
       </h1>
-      <h1 v-else class="prompt">
+      <h1 v-else class="prompt" :class="{ 'prompt-sentence': store.current.kind === 'sentence' }">
         {{ promptParts.core }}
         <span v-if="promptParts.hint" class="prompt-hint">{{ promptParts.hint }}</span>
       </h1>
@@ -1528,6 +1605,44 @@ const fanfare = computed(() => {
   margin: 0;
   text-align: center;
   font-weight: 600;
+}
+.prompt.prompt-sentence {
+  font-size: clamp(20px, 3.4vw, 30px);
+  font-weight: 500;
+  line-height: 1.7;
+}
+.deck-chip {
+  align-self: center;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  border: 1px solid var(--border, #444);
+  border-radius: 999px;
+  padding: 2px 10px;
+  margin-bottom: 6px;
+}
+.deck-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+  border: 1px solid var(--border, #444);
+  border-radius: 12px;
+  padding: 14px 18px;
+  margin-bottom: 8px;
+}
+.deck-banner-name {
+  font-size: 20px;
+  font-weight: 600;
+}
+.deck-banner-counts {
+  display: flex;
+  gap: 14px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.deck-banner-sprint {
+  color: var(--accent, #e8a33d);
 }
 .prompt-hint {
   display: block;

@@ -59,6 +59,7 @@ from kana_quiz.task_state import (
     CARD_TASKS,
     TASK_CLOZE,
     TASK_CLOZE_CHOICE,
+    TASK_JA2EN,
     TASK_SENTENCE_LISTEN,
     sibling_task,
 )
@@ -766,6 +767,97 @@ def _log_gemini_grade(
         logging.getLogger(__name__).exception("failed to write gemini_grade_log row")
 
 
+# The intro answer plus two successful spaced reviews. schedule() counts the
+# intro as repetition 1, so a lane at 3 has held across the one-day and the
+# three-day gaps — the "second mastery attempt" a sprint deck retires on.
+SPRINT_ARCHIVE_REPETITIONS = 3
+
+
+def _grade_sentence_answer(
+    conn: sqlite3.Connection,
+    word: Word,
+    typed_answer: str,
+) -> _TypedGradeResult:
+    """Grade a typed translation of a sentence card.
+
+    Same shape as the listening lane's grading: blessed alternates first,
+    then the Gemini translation grader, then strict equality when no grader
+    is configured. The card's own ``kana``/``english`` are the sentence and
+    its reference translation.
+    """
+    typed = typed_answer.strip()
+    if not typed:
+        return _TypedGradeResult(correct=False, outcome="incorrect", feedback=None)
+    normalized = normalize_english(typed)
+    if normalized and lookup_alternate(conn, word.id, TASK_JA2EN, normalized):
+        return _TypedGradeResult(correct=True, outcome="correct", feedback=None)
+    try:
+        grade = gemini.grade_translation(word.kana, word.english, typed)
+    except gemini.GeminiUnavailable:
+        grade = None
+    if grade is None:
+        correct = normalized == normalize_english(word.english)
+        return _TypedGradeResult(
+            correct=correct,
+            outcome="correct" if correct else "incorrect",
+            feedback=None,
+        )
+    correct = grade.verdict in ("correct", "accept")
+    if correct and grade.alternates:
+        _save_alternates(conn, word.id, TASK_JA2EN, grade.alternates)
+    return _TypedGradeResult(
+        correct=correct,
+        outcome="correct" if correct else "incorrect",
+        feedback=grade.explanation or None,
+    )
+
+
+def _maybe_archive_sprint_card(
+    conn: sqlite3.Connection, word_id: int, now: datetime
+) -> bool:
+    """Retire a sprint-deck card once every recall lane has held twice.
+
+    A sprint deck trades the 21-day mastery bar for throughput: when each of
+    the card's existing recall lanes reaches
+    :data:`SPRINT_ARCHIVE_REPETITIONS`, the card is archived —
+    ``ignored_at`` takes it out of every queue and ``archived_at`` records
+    that it was cleared rather than dismissed by hand. Drilling ahead in a
+    caught-up session can clear a card early; a sprint deck is deliberately
+    permissive about that.
+    """
+    row = conn.execute(
+        """
+        SELECT 1 FROM words w
+          JOIN decks d ON d.id = w.deck_id
+         WHERE w.id = ? AND w.archived_at IS NULL AND d.profile = 'sprint'
+        """,
+        (word_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    lanes = conn.execute(
+        """
+        SELECT MIN(repetitions) AS floor, COUNT(*) AS n FROM task_state
+         WHERE word_id = ? AND task IN (?, ?) AND introduced_at IS NOT NULL
+        """,
+        (word_id, *CARD_TASKS),
+    ).fetchone()
+    if not lanes["n"] or lanes["floor"] is None:
+        return False
+    if lanes["floor"] < SPRINT_ARCHIVE_REPETITIONS:
+        return False
+    now_iso = now.isoformat()
+    conn.execute(
+        """
+        UPDATE words
+           SET archived_at = ?, ignored_at = COALESCE(ignored_at, ?)
+         WHERE id = ?
+        """,
+        (now_iso, now_iso, word_id),
+    )
+    return True
+
+
 def _record_task_result(
     conn: sqlite3.Connection,
     *,
@@ -856,6 +948,10 @@ def _record_task_result(
                 (floor, floor, word_id, sibling),
             )
 
+    archived = False
+    if correct and task in CARD_TASKS:
+        archived = _maybe_archive_sprint_card(conn, word_id, now)
+
     return AnswerResult(
         correct=correct,
         outcome=outcome,  # type: ignore[arg-type]
@@ -866,6 +962,7 @@ def _record_task_result(
         feedback=feedback,
         maturity=maturity,
         maturity_up=maturity_up,
+        archived=archived,
     )
 
 
@@ -876,6 +973,7 @@ def _build_next_question(
     reveal: int,
     prefer_direction: Direction | None = None,
     mode: str = "mixed",
+    deck_id: int | None = None,
 ) -> NextQuestion | None:
     """Build the next question for the recall flow, or ``None`` when nothing's due.
 
@@ -894,6 +992,7 @@ def _build_next_question(
     # state, so contextual misses never downgrade basic word recall.
     if (
         mode != "new"
+        and deck_id is None
         and "cloze" in allowed
         and has_due_cloze(conn)
         and random.random() < CLOZE_INTERLEAVE_PROBABILITY
@@ -908,6 +1007,7 @@ def _build_next_question(
     # interleave shape; its own SRS lane and probability knob.
     if (
         mode != "new"
+        and deck_id is None
         and "cloze_choice" in allowed
         and has_due_cloze_choice(conn)
         and random.random() < CLOZE_CHOICE_INTERLEAVE_PROBABILITY
@@ -924,6 +1024,7 @@ def _build_next_question(
     # rolling for a card type that has no candidates.
     if (
         mode != "new"
+        and deck_id is None
         and "sentence_listen" in allowed
         and has_due_listening(conn)
         and random.random() < LISTENING_INTERLEAVE_PROBABILITY
@@ -933,7 +1034,11 @@ def _build_next_question(
             return _build_listening_question(lp)
 
     pick = pick_next_card(
-        conn, exclude_ids=exclude_ids, prefer_direction=prefer_direction, mode=mode
+        conn,
+        exclude_ids=exclude_ids,
+        prefer_direction=prefer_direction,
+        mode=mode,
+        deck_id=deck_id,
     )
     # pick_next_card falls back to an already-held card when nothing else is
     # available (better a repeat than a dead round); for us that means "nothing
@@ -953,7 +1058,7 @@ def _build_next_question(
     # New card or active leech surfacing — nudge the sentence prefetch
     # worker. The worker scans for any uncached words and fills them; if
     # this card is already cached, the wake is a cheap no-op.
-    if pick.just_introduced or streak > 0:
+    if (pick.just_introduced or streak > 0) and target.kind == "word":
         gemini.schedule_prefetch()
 
     # New-card auto-reveal: ship the cached example sentence + mnemonic inline
@@ -999,6 +1104,8 @@ def _build_next_question(
         use_mc = False
     else:
         use_mc = mc_ok
+    if target.kind == "sentence":
+        use_mc = False
 
     if use_mc:
         choices = build_choices(
@@ -1037,6 +1144,7 @@ def _build_next_question(
         correct_index=0,
         introduction=intro,
         kanji=target.kanji,
+        kind=target.kind,
         failure_streak=streak,
         time_limit_ms=type_window,
         sentence=reveal_sentence,
@@ -1054,6 +1162,7 @@ def next_question(
     modes: str | None = None,
     reveal: int = 1,
     pool: str | None = None,
+    deck: int | None = None,
     conn: sqlite3.Connection = Depends(get_conn),
 ) -> NextQuestion | Response:
     """Return the next question, or 204 when no cards are due.
@@ -1073,6 +1182,7 @@ def next_question(
         conn, exclude_ids, _parse_modes(modes), reveal,
         prefer_direction=_balanced_direction(conn),
         mode=_parse_pool(pool),
+        deck_id=deck,
     )
     if question is None:
         return Response(status_code=204)
@@ -1086,6 +1196,7 @@ def question_batch(
     modes: str | None = None,
     reveal: int = 1,
     pool: str | None = None,
+    deck: int | None = None,
     conn: sqlite3.Connection = Depends(get_conn),
 ) -> QuestionBatch:
     """Return up to ``n`` distinct upcoming questions in one round-trip.
@@ -1112,7 +1223,8 @@ def question_batch(
     for i in range(capped):
         prefer = lead if i % 2 == 0 else _other_direction(lead)
         question = _build_next_question(
-            conn, exclude_ids, allowed, reveal, prefer_direction=prefer, mode=picker_mode
+            conn, exclude_ids, allowed, reveal, prefer_direction=prefer,
+            mode=picker_mode, deck_id=deck,
         )
         if question is None:
             break
@@ -1196,6 +1308,10 @@ def word_sentence(
     if row is None:
         raise HTTPException(status_code=404, detail="word not found")
     word = word_from_row(row)
+    if word.kind == "sentence":
+        # The card IS a sentence; an example sentence for it is noise and a
+        # wasted model call.
+        raise HTTPException(status_code=404, detail="sentence cards have no example")
     try:
         sentence = gemini.get_or_create_sentence(conn, word)
     except gemini.GeminiUnavailable as e:
@@ -1300,13 +1416,16 @@ def submit_answer(
         correct = False
         feedback = None
     elif payload.typed_answer is not None:
-        grade = _grade_word_typed_answer(
-            conn,
-            word,
-            payload.typed_answer,
-            payload.direction,
-            alternate_task=payload.direction,
-        )
+        if word.kind == "sentence":
+            grade = _grade_sentence_answer(conn, word, payload.typed_answer)
+        else:
+            grade = _grade_word_typed_answer(
+                conn,
+                word,
+                payload.typed_answer,
+                payload.direction,
+                alternate_task=payload.direction,
+            )
         correct = grade.correct
         outcome = grade.outcome
         feedback = grade.feedback

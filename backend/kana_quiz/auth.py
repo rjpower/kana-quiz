@@ -34,6 +34,15 @@ def _password() -> str | None:
     return os.environ.get("KANA_AUTH_PASSWORD")
 
 
+def _api_token() -> str | None:
+    """Static bearer token for server-to-server callers (the kaku exporter).
+
+    Separate from the password so it can be rotated without re-teaching the
+    human, and so a leaked token never opens the login form.
+    """
+    return os.environ.get("KANA_API_TOKEN")
+
+
 def _secret_key() -> bytes:
     raw = os.environ.get("KANA_AUTH_SECRET") or _password() or ""
     return hashlib.sha256(raw.encode()).digest()
@@ -71,7 +80,16 @@ def is_authed(request: Request) -> bool:
     if not auth_required():
         return True
     token = request.cookies.get(COOKIE_NAME)
-    return bool(token and _verify(token))
+    if token and _verify(token):
+        return True
+    api_token = _api_token()
+    if api_token:
+        header = request.headers.get("authorization") or ""
+        if header.startswith("Bearer ") and hmac.compare_digest(
+            header.removeprefix("Bearer "), api_token
+        ):
+            return True
+    return False
 
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])

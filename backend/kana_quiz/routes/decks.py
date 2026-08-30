@@ -19,20 +19,31 @@ from kana_quiz.task_state import CARD_TASKS
 router = APIRouter()
 
 
-def _stats_for(conn: sqlite3.Connection, deck_id: int) -> tuple[int, int, int, int]:
-    """Return (word_count, new_count, due_count, ignored_count) for a deck.
+def _stats_for(
+    conn: sqlite3.Connection, deck_id: int
+) -> tuple[int, int, int, int, int]:
+    """Return (word_count, new_count, due_count, ignored_count, archived_count).
 
     ``word_count`` is the *active* size — ignored words are accounted for
     separately so the user can see e.g. "Default · 1235 words · 32 ignored".
     ``new_count`` and ``due_count`` already exclude ignored via the picker
     queries, but we mirror that here so the deck card stays consistent.
+    Archived cards (sprint graduates, which also carry ``ignored_at``) are
+    counted apart from hand-ignored ones.
     """
     word_count = conn.execute(
         "SELECT COUNT(*) AS n FROM words WHERE deck_id = ? AND ignored_at IS NULL",
         (deck_id,),
     ).fetchone()["n"]
     ignored_count = conn.execute(
-        "SELECT COUNT(*) AS n FROM words WHERE deck_id = ? AND ignored_at IS NOT NULL",
+        """
+        SELECT COUNT(*) AS n FROM words
+         WHERE deck_id = ? AND ignored_at IS NOT NULL AND archived_at IS NULL
+        """,
+        (deck_id,),
+    ).fetchone()["n"]
+    archived_count = conn.execute(
+        "SELECT COUNT(*) AS n FROM words WHERE deck_id = ? AND archived_at IS NOT NULL",
         (deck_id,),
     ).fetchone()["n"]
     new_count = conn.execute(
@@ -60,27 +71,32 @@ def _stats_for(conn: sqlite3.Connection, deck_id: int) -> tuple[int, int, int, i
         """,
         (deck_id, *CARD_TASKS, now_iso),
     ).fetchone()["n"]
-    return word_count, new_count, due_count, ignored_count
+    return word_count, new_count, due_count, ignored_count, archived_count
 
 
 def _row_to_deck(conn: sqlite3.Connection, row: sqlite3.Row) -> DeckOut:
-    word_count, new_count, due_count, ignored_count = _stats_for(conn, row["id"])
+    word_count, new_count, due_count, ignored_count, archived_count = _stats_for(
+        conn, row["id"]
+    )
     return DeckOut(
         id=row["id"],
         name=row["name"],
         level=row["level"],
         created_at=row["created_at"],
+        profile=row["profile"],
         word_count=word_count,
         new_count=new_count,
         due_count=due_count,
         ignored_count=ignored_count,
+        archived_count=archived_count,
     )
 
 
 @router.get("/decks", response_model=list[DeckOut])
 def list_decks(conn: sqlite3.Connection = Depends(get_conn)) -> list[DeckOut]:
     rows = conn.execute(
-        "SELECT id, name, level, created_at FROM decks ORDER BY level ASC, name ASC"
+        "SELECT id, name, level, profile, created_at FROM decks"
+        " ORDER BY level ASC, name ASC"
     ).fetchall()
     return [_row_to_deck(conn, r) for r in rows]
 
@@ -98,13 +114,15 @@ def create_deck(
     ).fetchone()
     if existing is not None:
         raise HTTPException(status_code=409, detail="deck name already exists")
+    if payload.profile not in ("standard", "sprint"):
+        raise HTTPException(status_code=400, detail="profile must be standard or sprint")
     cur = conn.execute(
-        "INSERT INTO decks (name, level) VALUES (?, ?)",
-        (name, payload.level),
+        "INSERT INTO decks (name, level, profile) VALUES (?, ?, ?)",
+        (name, payload.level, payload.profile),
     )
     deck_id = cur.lastrowid
     row = conn.execute(
-        "SELECT id, name, level, created_at FROM decks WHERE id = ?",
+        "SELECT id, name, level, profile, created_at FROM decks WHERE id = ?",
         (deck_id,),
     ).fetchone()
     return _row_to_deck(conn, row)
@@ -117,7 +135,8 @@ def update_deck(
     conn: sqlite3.Connection = Depends(get_conn),
 ) -> DeckOut:
     row = conn.execute(
-        "SELECT id, name, level, created_at FROM decks WHERE id = ?", (deck_id,)
+        "SELECT id, name, level, profile, created_at FROM decks WHERE id = ?",
+        (deck_id,),
     ).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="deck not found")
@@ -138,11 +157,19 @@ def update_deck(
     if payload.level is not None:
         sets.append("level = ?")
         params.append(payload.level)
+    if payload.profile is not None:
+        if payload.profile not in ("standard", "sprint"):
+            raise HTTPException(
+                status_code=400, detail="profile must be standard or sprint"
+            )
+        sets.append("profile = ?")
+        params.append(payload.profile)
     if sets:
         params.append(deck_id)
         conn.execute(f"UPDATE decks SET {', '.join(sets)} WHERE id = ?", tuple(params))
     row = conn.execute(
-        "SELECT id, name, level, created_at FROM decks WHERE id = ?", (deck_id,)
+        "SELECT id, name, level, profile, created_at FROM decks WHERE id = ?",
+        (deck_id,),
     ).fetchone()
     return _row_to_deck(conn, row)
 
@@ -186,7 +213,7 @@ def list_deck_words(
     # plain "no state" indicator on that side.
     rows = conn.execute(
         """
-        SELECT w.id, w.kana, w.english, w.kanji, w.ignored_at,
+        SELECT w.id, w.kana, w.english, w.kanji, w.ignored_at, w.archived_at,
                ts.task AS direction, ts.ease, ts.repetitions, ts.introduced_at
           FROM words w
           LEFT JOIN task_state ts
@@ -207,6 +234,7 @@ def list_deck_words(
                 "english": r["english"],
                 "kanji": r["kanji"],
                 "ignored": r["ignored_at"] is not None,
+                "archived": r["archived_at"] is not None,
                 "en2ja": None,
                 "ja2en": None,
             },
@@ -233,7 +261,7 @@ def list_ignored(
     rows = conn.execute(
         """
         SELECT id, kana, english, kanji, ignored_at FROM words
-         WHERE deck_id = ? AND ignored_at IS NOT NULL
+         WHERE deck_id = ? AND ignored_at IS NOT NULL AND archived_at IS NULL
          ORDER BY ignored_at DESC
         """,
         (deck_id,),

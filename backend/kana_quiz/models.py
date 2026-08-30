@@ -12,6 +12,10 @@ class Word:
     kanji: str | None
     tags: tuple[str, ...]
     deck_id: int
+    # 'word' or 'sentence'. A sentence card carries a full transcript line in
+    # ``kana`` and its translation in ``english``; it is quizzed ja→en
+    # type-in only.
+    kind: str = "word"
 
 
 def is_katakana_only(kana: str) -> bool:
@@ -53,4 +57,5 @@ def word_from_row(row: sqlite3.Row) -> Word:
         kanji=row["kanji"],
         tags=tags,
         deck_id=row["deck_id"],
+        kind=row["kind"] if "kind" in row.keys() else "word",
     )

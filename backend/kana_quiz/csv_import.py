@@ -178,13 +178,25 @@ def _update_task_state(
 
 
 def import_csv(
-    conn: sqlite3.Connection, payload: bytes, deck_id: int
+    conn: sqlite3.Connection,
+    payload: bytes,
+    deck_id: int,
+    insert_only: bool = False,
 ) -> ImportReport:
     """Upsert each CSV row, keyed by kana. Returns row-level counts.
 
     ``deck_id`` is required and is applied to *new* rows only — re-imports
     leave the existing ``deck_id`` untouched so users can move words
     between decks via the UI without an export round-trip.
+
+    ``insert_only`` skips rows whose kana already exists instead of updating
+    them. A machine-built export (kaku's episode decks) sets it so a
+    contextual translation can never overwrite a curated gloss that already
+    lives in another deck.
+
+    A ``kind`` column of ``sentence`` marks a full-line card: the ``kana``
+    column carries the sentence as written and ``english`` its translation.
+    Absent or empty means ``word``.
     """
     text = payload.decode("utf-8-sig")
     reader = csv.DictReader(io.StringIO(text))
@@ -207,6 +219,9 @@ def import_csv(
                 continue
             kanji = (row.get("kanji") or "").strip() or None
             tags = _normalize_tags(row.get("tags"))
+            kind = (row.get("kind") or "").strip() or "word"
+            if kind not in ("word", "sentence"):
+                raise ValueError(f"unknown kind {kind!r} for {kana!r}")
 
             interval_days = _parse_float(row.get("interval_days"))
             ease = _parse_float(row.get("ease"))
@@ -228,10 +243,10 @@ def import_csv(
             if existing is None:
                 cur = conn.execute(
                     """
-                    INSERT INTO words (kana, english, kanji, tags, deck_id)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO words (kana, english, kanji, tags, deck_id, kind)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     """,
-                    (kana, english, kanji, tags, deck_id),
+                    (kana, english, kanji, tags, deck_id, kind),
                 )
                 _seed_task_state(
                     conn,
@@ -243,6 +258,9 @@ def import_csv(
                     introduced_at=introduced_at,
                 )
                 inserted += 1
+            elif insert_only:
+                skipped += 1
+                continue
             else:
                 conn.execute(
                     "UPDATE words SET english = ?, kanji = ?, tags = ? WHERE id = ?",

@@ -30,6 +30,10 @@ class ImportReportOut(BaseModel):
     inserted: int
     updated: int
     skipped: int
+    # The deck the rows landed in — callers that create a deck by name (the
+    # kaku exporter) read these to link straight to it.
+    deck_id: int = 0
+    deck_name: str = ""
 
 
 class WordIntro(BaseModel):
@@ -64,6 +68,9 @@ class NextQuestion(BaseModel):
     # Type-in questions don't ship choices — the field stays present and empty
     # so the response shape is uniform across modes.
     mode: QuestionMode = "mc"
+    # 'word' or 'sentence' — a sentence card renders a full line as the
+    # prompt and sizes the answer box accordingly.
+    kind: str = "word"
     choices: list[str] = Field(default_factory=list, max_length=4)
     correct_index: int = 0
     # Present only on first-ever sighting of a word. Safe to ship: the intro
@@ -163,6 +170,9 @@ class AnswerResult(BaseModel):
     # firing on every correct rep. Derived, not stored.
     maturity: MaturityBucket = "learning"
     maturity_up: bool = False
+    # A sprint-deck card that just cleared its second spaced review and left
+    # the rotation. The client celebrates and strikes it from the round.
+    archived: bool = False
 
 
 class Stats(BaseModel):
@@ -305,11 +315,13 @@ class QuestionBatch(BaseModel):
 class DeckIn(BaseModel):
     name: str
     level: int = 5
+    profile: str = "standard"
 
 
 class DeckPatch(BaseModel):
     name: str | None = None
     level: int | None = None
+    profile: str | None = None
 
 
 class DeckOut(BaseModel):
@@ -317,12 +329,18 @@ class DeckOut(BaseModel):
     name: str
     level: int
     created_at: str
+    # 'standard' or 'sprint' — a sprint deck archives a card after its second
+    # successful spaced review.
+    profile: str = "standard"
     # word_count excludes ignored words — the headline number a user reads as
     # "deck size" should match what the picker can serve.
     word_count: int = 0
     new_count: int = 0
     due_count: int = 0
     ignored_count: int = 0
+    # Sprint cards that cleared the deck; a subset of neither word_count nor
+    # ignored_count (the stats split them apart).
+    archived_count: int = 0
 
 
 class IgnoredWord(BaseModel):
@@ -357,7 +375,10 @@ class DeckWord(BaseModel):
 
     ``ignored`` is the boolean derived from ``words.ignored_at`` — the
     detail view shows every card whether ignored or not, with a toggle,
-    so the frontend doesn't need the timestamp.
+    so the frontend doesn't need the timestamp. ``archived`` marks a
+    sprint graduate: it also carries ``ignored`` (that is what keeps it
+    out of every queue), and the view names it cleared rather than
+    ignored.
 
     ``en2ja`` / ``ja2en`` are ``None`` when no task_state row exists
     for that direction (e.g. katakana-only cards never get a ja2en
@@ -370,5 +391,6 @@ class DeckWord(BaseModel):
     english: str
     kanji: str | None = None
     ignored: bool
+    archived: bool = False
     en2ja: DeckWordState | None = None
     ja2en: DeckWordState | None = None

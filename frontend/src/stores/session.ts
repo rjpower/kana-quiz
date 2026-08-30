@@ -161,6 +161,9 @@ export interface NextQuestion {
   direction: Direction
   prompt: string
   mode: QuestionMode
+  // 'word' or 'sentence' — a sentence card renders the whole line as the
+  // prompt and gets a full-width answer box.
+  kind?: 'word' | 'sentence'
   choices: string[]
   correct_index: number
   introduction?: WordIntro | null
@@ -238,6 +241,9 @@ export interface AnswerResult {
   // the POST resolves — the toast fills them in when the response arrives.
   maturity?: Maturity
   maturity_up?: boolean
+  // A sprint-deck card that just cleared its second spaced review and left
+  // the rotation for good.
+  archived?: boolean
 }
 
 // Display labels for the mastery buckets. Mirrors MATURITY_ORDER in srs.py;
@@ -701,6 +707,25 @@ export const useSessionStore = defineStore('session', () => {
   // drills every card to fluency; a review session drills only the misses).
   const sessionMode = ref<'review' | 'new'>('review')
 
+  // Deck scope. When set, every /session/next and /session/batch call carries
+  // `deck=<id>` so the picker serves that deck alone — the podcast-episode
+  // study flow. Set from StudyView's route query; null is the normal
+  // whole-collection session.
+  const deckId = ref<number | null>(null)
+  const deckName = ref('')
+
+  function setDeck(id: number | null, name = '') {
+    if (deckId.value === id) {
+      deckName.value = name || deckName.value
+      return
+    }
+    deckId.value = id
+    deckName.value = name
+    // A different scope means every buffered question is from the wrong
+    // pool; drop the hand so the next fetch refills in scope.
+    prefetchBuffer.value = []
+  }
+
   function setMode(mode: AnswerType, on: boolean) {
     const next: EnabledModes = { ...enabledModes.value, [mode]: on }
     // Keep at least one core recall mode on. If the user turns off the last
@@ -754,6 +779,7 @@ export const useSessionStore = defineStore('session', () => {
     params.set('modes', modesParam())
     params.set('reveal', autoRevealNewCards.value ? '1' : '0')
     params.set('pool', sessionMode.value)
+    if (deckId.value != null) params.set('deck', String(deckId.value))
     return `/api/session/next?${params.toString()}`
   }
 
@@ -790,6 +816,7 @@ export const useSessionStore = defineStore('session', () => {
     params.set('modes', modesParam())
     params.set('reveal', autoRevealNewCards.value ? '1' : '0')
     params.set('pool', sessionMode.value)
+    if (deckId.value != null) params.set('deck', String(deckId.value))
     return `/api/session/batch?${params.toString()}`
   }
 
@@ -1184,6 +1211,17 @@ export const useSessionStore = defineStore('session', () => {
             : { tone: 'error' as const, icon: '✕', main: 'Missed' }
       return toasts.push({ ...missed, sub: level })
     }
+    // A sprint card that just cleared outranks a level-up: the card is done
+    // for good, and that is the news.
+    if (result.archived) {
+      return toasts.push({
+        tone: 'success',
+        icon: '🏁',
+        main: 'Cleared',
+        sub: 'Archived from this deck',
+        sparkle: true,
+      })
+    }
     // A promotion leads with the new level and earns the sparkle; an ordinary
     // correct answer just confirms and shows where the card sits.
     return toasts.push({
@@ -1199,7 +1237,14 @@ export const useSessionStore = defineStore('session', () => {
   function applyMaturityToast(id: number, r: AnswerResult | undefined): void {
     if (!r?.maturity) return
     const level = MATURITY_LABEL[r.maturity]
-    if (r.correct && r.maturity_up) {
+    if (r.correct && r.archived) {
+      toasts.update(id, {
+        icon: '🏁',
+        main: 'Cleared',
+        sub: 'Archived from this deck',
+        sparkle: true,
+      })
+    } else if (r.correct && r.maturity_up) {
       toasts.update(id, { icon: '✨', main: level, sub: 'Levelled up', sparkle: true })
     } else {
       toasts.update(id, { sub: level })
@@ -1904,6 +1949,9 @@ export const useSessionStore = defineStore('session', () => {
     newCardsPerSession,
     setNewCardsPerSession,
     sessionMode,
+    deckId,
+    deckName,
+    setDeck,
     drillPendingCount,
     fetchNext,
     submit,

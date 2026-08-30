@@ -1309,7 +1309,7 @@ def _missing_word_ids(conn: sqlite3.Connection, model: str) -> list[int]:
         SELECT w.id FROM words w
         LEFT JOIN sentence_cache s
           ON s.word_id = w.id AND s.model = ?
-        WHERE s.id IS NULL
+        WHERE s.id IS NULL AND w.kind = 'word'
         ORDER BY w.id ASC
         """,
         (model,),

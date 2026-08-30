@@ -17,7 +17,7 @@ def test_import_inserts_all_rows(client: TestClient, sample_csv: bytes) -> None:
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body == {"inserted": 10, "updated": 0, "skipped": 0}
+    assert body == {"inserted": 10, "updated": 0, "skipped": 0, "deck_id": 1, "deck_name": "Default"}
 
     stats = client.get("/api/stats").json()
     assert stats["total_words"] == 10
@@ -41,7 +41,7 @@ def test_reimport_updates_instead_of_duplicating(
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body == {"inserted": 0, "updated": 10, "skipped": 0}
+    assert body == {"inserted": 0, "updated": 10, "skipped": 0, "deck_id": 1, "deck_name": "Default"}
 
     stats = client.get("/api/stats").json()
     assert stats["total_words"] == 10
@@ -76,7 +76,7 @@ def test_import_with_srs_state_columns(client: TestClient) -> None:
         data={"deck_id": str(deck_id)},
     )
     assert resp.status_code == 200
-    assert resp.json() == {"inserted": 3, "updated": 0, "skipped": 0}
+    assert resp.json() == {"inserted": 3, "updated": 0, "skipped": 0, "deck_id": 1, "deck_name": "Default"}
 
     detailed = client.get("/api/stats/detailed").json()
     by_kana = {w["kana"]: w for w in detailed["words"]}
@@ -137,4 +137,4 @@ def test_rows_missing_values_are_skipped(client: TestClient) -> None:
         data={"deck_id": str(deck_id)},
     )
     assert resp.status_code == 200
-    assert resp.json() == {"inserted": 2, "updated": 0, "skipped": 2}
+    assert resp.json() == {"inserted": 2, "updated": 0, "skipped": 2, "deck_id": 1, "deck_name": "Default"}

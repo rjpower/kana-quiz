@@ -249,6 +249,7 @@ def pick_next_card(
     exclude_ids: set[int] | None = None,
     prefer_direction: Direction | None = None,
     mode: str = "mixed",
+    deck_id: int | None = None,
 ) -> CardPick | None:
     """Pick the next (word, direction) to show, or ``None`` if nothing's available.
 
@@ -290,9 +291,15 @@ def pick_next_card(
     but lets the caller interleave recognition/production within a session
     rather than draining one direction's cohort first (the "all ja→en today"
     monotony). Ignored for new-word intros and the caught-up reuse fallback.
+
+    ``deck_id`` scopes the whole pick — due cards, the backlog gate, and
+    new-word intros — to one deck, so a deck session studies that deck and
+    nothing else.
     """
     now = _now()
     now_iso = now.isoformat()
+    deck_clause = "" if deck_id is None else " AND w.deck_id = ?"
+    deck_params: tuple[int, ...] = () if deck_id is None else (deck_id,)
 
     excl_clause, excl_params = _word_set_exclusion_clause(
         "ts.word_id", exclude_ids or set()
@@ -311,11 +318,11 @@ def pick_next_card(
           JOIN words w ON w.id = ts.word_id
          WHERE ts.task IN (?, ?)
            AND ts.introduced_at IS NOT NULL AND ts.due_at <= ?
-           AND w.ignored_at IS NULL{excl_clause}
+           AND w.ignored_at IS NULL{excl_clause}{deck_clause}
          ORDER BY ts.due_at ASC
          LIMIT 1
         """,
-        (*CARD_TASKS, now_iso, *excl_params),
+        (*CARD_TASKS, now_iso, *excl_params, *deck_params),
     ).fetchone()
 
     # Direction balancing: if the caller asked for a direction and one is due in
@@ -330,11 +337,11 @@ def pick_next_card(
               JOIN words w ON w.id = ts.word_id
              WHERE ts.task = ?
                AND ts.introduced_at IS NOT NULL AND ts.due_at <= ?
-               AND w.ignored_at IS NULL{excl_clause}
+               AND w.ignored_at IS NULL{excl_clause}{deck_clause}
              ORDER BY ts.due_at ASC
              LIMIT 1
             """,
-            (prefer_direction, now_iso, *excl_params),
+            (prefer_direction, now_iso, *excl_params, *deck_params),
         ).fetchone()
         if pref_row is not None:
             serve_row = pref_row
@@ -346,9 +353,9 @@ def pick_next_card(
           JOIN words w ON w.id = ts.word_id
          WHERE ts.task IN (?, ?)
            AND ts.introduced_at IS NOT NULL AND ts.due_at <= ?
-           AND w.ignored_at IS NULL{excl_clause}
+           AND w.ignored_at IS NULL{excl_clause}{deck_clause}
         """,
-        (*CARD_TASKS, soon_iso, *excl_params),
+        (*CARD_TASKS, soon_iso, *excl_params, *deck_params),
     ).fetchone()["n"]
 
     def _served(row: sqlite3.Row) -> CardPick:
@@ -385,9 +392,9 @@ def pick_next_card(
              WHERE ts.task IN (?, ?)
                AND ts.introduced_at IS NOT NULL
                AND ts.interval_days < 1.0
-               AND w.ignored_at IS NULL{excl_clause}
+               AND w.ignored_at IS NULL{excl_clause}{deck_clause}
             """,
-            (*CARD_TASKS, *excl_params),
+            (*CARD_TASKS, *excl_params, *deck_params),
         ).fetchone()["n"]
         if mode != "new" and NEW_WORD_BACKLOG_LIMIT > 0
         else 0
@@ -417,11 +424,13 @@ def pick_next_card(
                SELECT 1 FROM task_state ts
                 WHERE ts.word_id = w.id AND ts.task IN ('en2ja', 'ja2en')
                   AND ts.introduced_at IS NOT NULL
-             ){new_excl_clause}
-             ORDER BY COALESCE(d.level, 999) ASC, RANDOM()
+             ){new_excl_clause}{deck_clause}
+             ORDER BY COALESCE(d.level, 999) ASC,
+                      CASE WHEN w.kind = 'sentence' THEN w.id END,
+                      RANDOM()
              LIMIT 1
             """,
-            new_excl_params,
+            (*new_excl_params, *deck_params),
         ).fetchone()
         if mode == "new" or NEW_WORD_BACKLOG_LIMIT <= 0 or backlog < NEW_WORD_BACKLOG_LIMIT
         else None
@@ -438,10 +447,12 @@ def pick_next_card(
         # enough to flag the card as loanword-only.
         kana = new_word_row["kana"] or ""
         kanji = new_word_row["kanji"] or ""
-        directions: tuple[Direction, ...] = (
-            (TASK_EN2JA,) if is_katakana_only(kana) or is_katakana_only(kanji)
-            else (TASK_EN2JA, TASK_JA2EN)
-        )
+        if new_word_row["kind"] == "sentence":
+            directions: tuple[Direction, ...] = (TASK_JA2EN,)
+        elif is_katakana_only(kana) or is_katakana_only(kanji):
+            directions = (TASK_EN2JA,)
+        else:
+            directions = (TASK_EN2JA, TASK_JA2EN)
         for direction in directions:
             # introduced_at stays NULL until the user answers (the answer route
             # stamps every recall row for the word). Until then these rows exist
@@ -490,11 +501,11 @@ def pick_next_card(
           JOIN words w ON w.id = ts.word_id
          WHERE ts.task IN (?, ?)
            AND ts.introduced_at IS NOT NULL
-           AND w.ignored_at IS NULL{excl_clause}
+           AND w.ignored_at IS NULL{excl_clause}{deck_clause}
          ORDER BY ts.due_at ASC
          LIMIT 1
         """,
-        (*CARD_TASKS, *excl_params),
+        (*CARD_TASKS, *excl_params, *deck_params),
     ).fetchone()
     if reuse_row is not None:
         word = _hydrate_word(conn, reuse_row["word_id"])
@@ -508,7 +519,7 @@ def pick_next_card(
         )
 
     if exclude_ids:
-        return pick_next_card(conn, exclude_ids=None)
+        return pick_next_card(conn, exclude_ids=None, deck_id=deck_id)
     return None
 
 
@@ -592,7 +603,7 @@ def pick_match_batch(
           JOIN words w ON w.id = ts.word_id
          WHERE ts.task IN (?, ?)
            AND ts.introduced_at IS NOT NULL AND ts.due_at <= ?
-           AND w.ignored_at IS NULL{excl_clause}
+           AND w.ignored_at IS NULL AND w.kind = 'word'{excl_clause}
          ORDER BY ts.due_at ASC
          LIMIT ?
         """,
@@ -610,7 +621,7 @@ def pick_match_batch(
           JOIN words w ON w.id = ts.word_id
          WHERE ts.task IN (?, ?)
            AND ts.introduced_at IS NOT NULL
-           AND w.ignored_at IS NULL{excl_clause}
+           AND w.ignored_at IS NULL AND w.kind = 'word'{excl_clause}
          ORDER BY ts.due_at ASC
          LIMIT ?
         """,
@@ -686,7 +697,7 @@ def _eligible_new_supplemental_word_id(
           JOIN task_state cs ON cs.word_id = w.id
           JOIN sentence_cache sc ON sc.word_id = w.id
           {audio_join}
-         WHERE w.ignored_at IS NULL
+         WHERE w.ignored_at IS NULL AND w.kind = 'word'
            AND cs.task IN ({task_placeholders})
            AND cs.ease >= ?
            AND cs.repetitions >= ?
@@ -1028,7 +1039,7 @@ def _phonetic_candidates(
     rows = conn.execute(
         """
         SELECT * FROM words
-         WHERE id != ?
+         WHERE id != ? AND kind = 'word'
            AND (substr(kana, 1, 1) = ? OR abs(length(kana) - ?) <= 1)
          LIMIT 80
         """,
@@ -1059,7 +1070,7 @@ def _tag_candidates(
     rows = conn.execute(
         f"""
         SELECT * FROM words
-         WHERE id != ?
+         WHERE id != ? AND kind = 'word'
            AND tags IS NOT NULL
            AND ({tag_clauses})
          LIMIT 50
@@ -1073,7 +1084,7 @@ def _random_candidates(
     conn: sqlite3.Connection, target: Word, exclude_ids: set[int]
 ) -> list[Word]:
     rows = conn.execute(
-        "SELECT * FROM words WHERE id != ? ORDER BY RANDOM() LIMIT 20",
+        "SELECT * FROM words WHERE id != ? AND kind = 'word' ORDER BY RANDOM() LIMIT 20",
         (target.id,),
     ).fetchall()
     return [word_from_row(r) for r in rows if r["id"] not in exclude_ids]

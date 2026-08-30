@@ -24,7 +24,7 @@ def all_glosses(conn: sqlite3.Connection = Depends(get_conn)) -> list[str]:
     """
     glosses: set[str] = set()
     for r in conn.execute(
-        "SELECT english FROM words WHERE ignored_at IS NULL"
+        "SELECT english FROM words WHERE ignored_at IS NULL AND kind = 'word'"
     ):
         raw = r["english"] or ""
         for piece in raw.split(","):
@@ -60,6 +60,7 @@ def unignore_word(
     if row is None:
         raise HTTPException(status_code=404, detail="word not found")
     conn.execute(
-        "UPDATE words SET ignored_at = NULL WHERE id = ?", (word_id,)
+        "UPDATE words SET ignored_at = NULL, archived_at = NULL WHERE id = ?",
+        (word_id,),
     )
     return Response(status_code=204)
