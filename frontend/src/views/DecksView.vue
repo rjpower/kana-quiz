@@ -36,6 +36,46 @@ const newLevel = ref(5)
 const createBusy = ref(false)
 const createError = ref<string | null>(null)
 
+// Level is the new-card draw order across decks, so it is read and
+// compared on this screen. Edit it here rather than making the user open
+// each deck in turn.
+const levelBusy = ref<Record<number, boolean>>({})
+const levelError = ref<Record<number, string>>({})
+
+async function saveLevel(deck: Deck, event: Event) {
+  const input = event.target as HTMLInputElement
+  const level = Number(input.value)
+  if (!Number.isInteger(level) || level < 1) {
+    levelError.value[deck.id] = 'Level must be a whole number of 1 or more.'
+    input.value = String(deck.level)
+    return
+  }
+  if (level === deck.level) return
+  levelBusy.value[deck.id] = true
+  delete levelError.value[deck.id]
+  try {
+    const resp = await fetch(`/api/decks/${deck.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ level }),
+    })
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({ detail: resp.statusText }))
+      levelError.value[deck.id] = body.detail ?? `HTTP ${resp.status}`
+      input.value = String(deck.level)
+      return
+    }
+    // Keep the row where it is: the server orders decks by level, and
+    // re-sorting under the cursor would move the input the user just used.
+    deck.level = ((await resp.json()) as Deck).level
+  } catch (e) {
+    levelError.value[deck.id] = e instanceof Error ? e.message : String(e)
+    input.value = String(deck.level)
+  } finally {
+    levelBusy.value[deck.id] = false
+  }
+}
+
 async function load() {
   loading.value = true
   error.value = null
@@ -158,7 +198,19 @@ async function createDeck() {
       <div class="deck-row">
         <div class="deck-main">
           <div class="deck-name">{{ d.name }}</div>
-          <div class="deck-sub muted">level {{ d.level }}</div>
+          <label class="deck-sub level">
+            Level
+            <input
+              class="input small"
+              type="number"
+              min="1"
+              max="20"
+              :value="d.level"
+              :disabled="levelBusy[d.id]"
+              @change="saveLevel(d, $event)"
+            />
+          </label>
+          <div v-if="levelError[d.id]" class="row-error">{{ levelError[d.id] }}</div>
         </div>
         <div class="deck-stats">
           <div class="stat">
@@ -219,7 +271,7 @@ h2 { margin: 0 0 14px; }
   flex: 1;
   min-width: 160px;
 }
-.input.small { width: 80px; flex: 0 0 80px; padding: 6px 8px; font-size: 13px; }
+.input.small { width: 80px; flex: 0 0 80px; min-width: 0; padding: 6px 8px; font-size: 13px; }
 .level {
   display: inline-flex;
   align-items: center;

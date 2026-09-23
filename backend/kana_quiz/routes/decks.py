@@ -3,7 +3,7 @@
 import sqlite3
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from kana_quiz.db import get_conn
 from kana_quiz.schemas import (
@@ -177,18 +177,29 @@ def update_deck(
 @router.delete("/decks/{deck_id}", status_code=204)
 def delete_deck(
     deck_id: int,
+    force: bool = Query(False),
     conn: sqlite3.Connection = Depends(get_conn),
 ) -> Response:
+    """Delete a deck. ``force`` also deletes the words it holds.
+
+    A delete of a deck that still holds words is refused, and the 409 names
+    the count. ``force=true`` is the confirmed path: it deletes the words
+    first, and the ``ON DELETE CASCADE`` on every child table (task_state,
+    reviews, word_alternates, sentence_cache) removes their SRS history with
+    them.
+    """
     row = conn.execute("SELECT id FROM decks WHERE id = ?", (deck_id,)).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="deck not found")
     word_count = conn.execute(
         "SELECT COUNT(*) AS n FROM words WHERE deck_id = ?", (deck_id,)
     ).fetchone()["n"]
-    if word_count > 0:
+    if word_count > 0 and not force:
         raise HTTPException(
             status_code=409, detail=f"deck has {word_count} words"
         )
+    if word_count > 0:
+        conn.execute("DELETE FROM words WHERE deck_id = ?", (deck_id,))
     conn.execute("DELETE FROM decks WHERE id = ?", (deck_id,))
     return Response(status_code=204)
 

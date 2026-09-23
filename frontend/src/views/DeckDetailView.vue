@@ -272,11 +272,21 @@ async function saveEdit() {
   }
 }
 
+// A populated deck needs ``force``: the server refuses to drop words by
+// accident. The confirmation names the word count so the user knows what
+// the delete takes with it.
 async function deleteDeck() {
   if (!meta.value) return
-  if (!confirm(`Delete deck "${meta.value.name}"? This cannot be undone.`)) return
+  const total = counts.value.all
+  const warning = total > 0
+    ? `Delete deck "${meta.value.name}" and its ${total} words, with all their review history? This cannot be undone.`
+    : `Delete deck "${meta.value.name}"? This cannot be undone.`
+  if (!confirm(warning)) return
   try {
-    const resp = await fetch(`/api/decks/${meta.value.id}`, { method: 'DELETE' })
+    const url = total > 0
+      ? `/api/decks/${meta.value.id}?force=true`
+      : `/api/decks/${meta.value.id}`
+    const resp = await fetch(url, { method: 'DELETE' })
     if (resp.status === 204) {
       await router.push('/decks')
       return
@@ -318,7 +328,7 @@ async function deleteDeck() {
           <button class="btn ghost" type="button" :disabled="profileBusy" @click="toggleSprint">
             {{ meta.profile === 'sprint' ? 'Make standard' : 'Make sprint' }}
           </button>
-          <button class="btn ghost" type="button" @click="startEdit">Rename</button>
+          <button class="btn ghost" type="button" @click="startEdit">Edit name and level</button>
           <button class="btn danger" type="button" @click="deleteDeck">Delete</button>
         </div>
       </div>
@@ -521,7 +531,7 @@ async function deleteDeck() {
   flex: 1;
   min-width: 160px;
 }
-.input.small { width: 80px; flex: 0 0 80px; padding: 6px 8px; font-size: 13px; }
+.input.small { width: 80px; flex: 0 0 80px; min-width: 0; padding: 6px 8px; font-size: 13px; }
 .level {
   display: inline-flex;
   align-items: center;
