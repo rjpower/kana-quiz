@@ -84,6 +84,7 @@ def _row_to_deck(conn: sqlite3.Connection, row: sqlite3.Row) -> DeckOut:
         level=row["level"],
         created_at=row["created_at"],
         profile=row["profile"],
+        pick_order=row["pick_order"],
         word_count=word_count,
         new_count=new_count,
         due_count=due_count,
@@ -95,7 +96,7 @@ def _row_to_deck(conn: sqlite3.Connection, row: sqlite3.Row) -> DeckOut:
 @router.get("/decks", response_model=list[DeckOut])
 def list_decks(conn: sqlite3.Connection = Depends(get_conn)) -> list[DeckOut]:
     rows = conn.execute(
-        "SELECT id, name, level, profile, created_at FROM decks"
+        "SELECT id, name, level, profile, pick_order, created_at FROM decks"
         " ORDER BY level ASC, name ASC"
     ).fetchall()
     return [_row_to_deck(conn, r) for r in rows]
@@ -116,13 +117,15 @@ def create_deck(
         raise HTTPException(status_code=409, detail="deck name already exists")
     if payload.profile not in ("standard", "sprint"):
         raise HTTPException(status_code=400, detail="profile must be standard or sprint")
+    if payload.pick_order not in ("random", "listed"):
+        raise HTTPException(status_code=400, detail="pick_order must be random or listed")
     cur = conn.execute(
-        "INSERT INTO decks (name, level, profile) VALUES (?, ?, ?)",
-        (name, payload.level, payload.profile),
+        "INSERT INTO decks (name, level, profile, pick_order) VALUES (?, ?, ?, ?)",
+        (name, payload.level, payload.profile, payload.pick_order),
     )
     deck_id = cur.lastrowid
     row = conn.execute(
-        "SELECT id, name, level, profile, created_at FROM decks WHERE id = ?",
+        "SELECT id, name, level, profile, pick_order, created_at FROM decks WHERE id = ?",
         (deck_id,),
     ).fetchone()
     return _row_to_deck(conn, row)
@@ -135,7 +138,7 @@ def update_deck(
     conn: sqlite3.Connection = Depends(get_conn),
 ) -> DeckOut:
     row = conn.execute(
-        "SELECT id, name, level, profile, created_at FROM decks WHERE id = ?",
+        "SELECT id, name, level, profile, pick_order, created_at FROM decks WHERE id = ?",
         (deck_id,),
     ).fetchone()
     if row is None:
@@ -164,11 +167,18 @@ def update_deck(
             )
         sets.append("profile = ?")
         params.append(payload.profile)
+    if payload.pick_order is not None:
+        if payload.pick_order not in ("random", "listed"):
+            raise HTTPException(
+                status_code=400, detail="pick_order must be random or listed"
+            )
+        sets.append("pick_order = ?")
+        params.append(payload.pick_order)
     if sets:
         params.append(deck_id)
         conn.execute(f"UPDATE decks SET {', '.join(sets)} WHERE id = ?", tuple(params))
     row = conn.execute(
-        "SELECT id, name, level, profile, created_at FROM decks WHERE id = ?",
+        "SELECT id, name, level, profile, pick_order, created_at FROM decks WHERE id = ?",
         (deck_id,),
     ).fetchone()
     return _row_to_deck(conn, row)

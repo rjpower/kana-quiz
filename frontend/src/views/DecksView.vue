@@ -6,6 +6,7 @@ interface Deck {
   id: number
   name: string
   level: number
+  pick_order: 'random' | 'listed'
   created_at: string
   word_count: number
   new_count: number
@@ -73,6 +74,34 @@ async function saveLevel(deck: Deck, event: Event) {
     input.value = String(deck.level)
   } finally {
     levelBusy.value[deck.id] = false
+  }
+}
+
+// New cards within a level are drawn at random unless the deck says
+// 'listed', which follows import order; a frequency-sorted deck wants that.
+const orderBusy = ref<Record<number, boolean>>({})
+
+async function saveOrder(deck: Deck, event: Event) {
+  const pick_order = (event.target as HTMLSelectElement).value as Deck['pick_order']
+  if (pick_order === deck.pick_order) return
+  orderBusy.value[deck.id] = true
+  delete levelError.value[deck.id]
+  try {
+    const resp = await fetch(`/api/decks/${deck.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pick_order }),
+    })
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({}))
+      levelError.value[deck.id] = body.detail ?? `HTTP ${resp.status}`
+      return
+    }
+    deck.pick_order = ((await resp.json()) as Deck).pick_order
+  } catch (e) {
+    levelError.value[deck.id] = e instanceof Error ? e.message : String(e)
+  } finally {
+    orderBusy.value[deck.id] = false
   }
 }
 
@@ -209,6 +238,18 @@ async function createDeck() {
               :disabled="levelBusy[d.id]"
               @change="saveLevel(d, $event)"
             />
+          </label>
+          <label class="deck-sub level">
+            New cards
+            <select
+              class="input small"
+              :value="d.pick_order"
+              :disabled="orderBusy[d.id]"
+              @change="saveOrder(d, $event)"
+            >
+              <option value="random">random</option>
+              <option value="listed">in order</option>
+            </select>
           </label>
           <div v-if="levelError[d.id]" class="row-error">{{ levelError[d.id] }}</div>
         </div>

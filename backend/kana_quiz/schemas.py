@@ -316,12 +316,14 @@ class DeckIn(BaseModel):
     name: str
     level: int = 5
     profile: str = "standard"
+    pick_order: str = "random"
 
 
 class DeckPatch(BaseModel):
     name: str | None = None
     level: int | None = None
     profile: str | None = None
+    pick_order: str | None = None
 
 
 class DeckOut(BaseModel):
@@ -332,6 +334,9 @@ class DeckOut(BaseModel):
     # 'standard' or 'sprint' — a sprint deck archives a card after its second
     # successful spaced review.
     profile: str = "standard"
+    # 'random' draws new cards in any order within the deck's level; 'listed'
+    # draws them in import order, for a deck sorted by frequency.
+    pick_order: str = "random"
     # word_count excludes ignored words — the headline number a user reads as
     # "deck size" should match what the picker can serve.
     word_count: int = 0

@@ -406,7 +406,9 @@ def pick_next_card(
     # then RANDOM() to sample within a level. The old id tiebreaker drained a
     # deck in import order, which front-loaded whatever the CSV happened to list
     # first (e.g. a run of katakana loanwords); random within-level keeps the
-    # level progression while giving a varied mix from the get-go.
+    # level progression while giving a varied mix from the get-go. A deck
+    # whose pick_order is 'listed' opts back into import order, for a CSV
+    # sorted by frequency.
     # "Unseen" means no recall row that has actually been *introduced* — not
     # merely no row at all. The picker seeds rows at hand-out time (it has to:
     # both directions are created together, and the answer path only ever
@@ -426,7 +428,8 @@ def pick_next_card(
                   AND ts.introduced_at IS NOT NULL
              ){new_excl_clause}{deck_clause}
              ORDER BY COALESCE(d.level, 999) ASC,
-                      CASE WHEN w.kind = 'sentence' THEN w.id END,
+                      CASE WHEN w.kind = 'sentence' OR d.pick_order = 'listed'
+                           THEN w.id END,
                       RANDOM()
              LIMIT 1
             """,

@@ -122,3 +122,25 @@ def test_force_delete_leaves_other_decks_alone(
 
 def test_delete_missing_deck_is_404(client: TestClient) -> None:
     assert client.delete("/api/decks/9999?force=true").status_code == 404
+
+
+def test_patch_pick_order_persists_and_rejects_unknown(client: TestClient) -> None:
+    deck_id = client.post("/api/decks", json={"name": "Drama", "level": 5}).json()["id"]
+    assert _deck(client, deck_id)["pick_order"] == "random"
+    resp = client.patch(f"/api/decks/{deck_id}", json={"pick_order": "listed"})
+    assert resp.status_code == 200
+    assert _deck(client, deck_id)["pick_order"] == "listed"
+    assert client.patch(f"/api/decks/{deck_id}", json={"pick_order": "shuffled"}).status_code == 400
+
+
+def test_listed_deck_deals_new_cards_in_import_order(client: TestClient, db_path: Path) -> None:
+    """A 'listed' deck hands out its unseen words by id, so a CSV sorted by
+    frequency is studied most common first."""
+    rows = "\n".join(f"かな{i},gloss {i},," for i in range(12))
+    csv = ("kana,english,kanji,tags\n" + rows).encode("utf-8")
+    deck_id = _populated_deck(client, csv, "Listed")
+    assert client.patch(f"/api/decks/{deck_id}", json={"pick_order": "listed"}).status_code == 200
+    first = client.get("/api/session/next", params={"deck": deck_id, "pool": "new"}).json()
+    assert first["word_id"] == _conn(db_path).execute(
+        "SELECT MIN(id) AS id FROM words WHERE deck_id = ?", (deck_id,)
+    ).fetchone()["id"]
