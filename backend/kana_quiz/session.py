@@ -39,6 +39,9 @@ from kana_quiz.task_state import (
 Direction = Literal["en2ja", "ja2en"]
 
 NEW_WORD_TARGET_AT_ONCE = 3
+# A word met for the first time is asked in its other direction within this
+# many minutes of the debut answer, ahead of every due card.
+INTRO_PAIR_WINDOW_MINUTES = 60
 NEW_WORD_LOOKAHEAD_MINUTES = 5
 DUE_QUEUE_LIMIT = 40
 RECENT_REVIEW_LOOKBACK = 30
@@ -367,6 +370,36 @@ def pick_next_card(
             just_introduced=False,
             ease=row["ease"],
         )
+
+    # The initial review asks both directions. Once the debut direction of a
+    # fresh word is answered, its sibling lane (introduced, never reviewed) is
+    # served before anything else in every mode. The pair snooze on due_at is
+    # left alone; it governs later sittings. ``exclude`` still applies, so the
+    # sibling follows the buffered cards rather than the very next screen.
+    recent_iso = (now - timedelta(minutes=INTRO_PAIR_WINDOW_MINUTES)).isoformat()
+    pair_row = conn.execute(
+        f"""
+        SELECT ts.* FROM task_state ts
+          JOIN words w ON w.id = ts.word_id
+         WHERE ts.task IN (?, ?)
+           AND ts.introduced_at IS NOT NULL
+           AND ts.introduced_at >= ?
+           AND NOT EXISTS (
+             SELECT 1 FROM reviews r
+              WHERE r.word_id = ts.word_id AND r.direction = ts.task
+           )
+           AND EXISTS (
+             SELECT 1 FROM reviews r
+              WHERE r.word_id = ts.word_id AND r.direction IN (?, ?)
+           )
+           AND w.ignored_at IS NULL{excl_clause}{deck_clause}
+         ORDER BY ts.introduced_at ASC
+         LIMIT 1
+        """,
+        (*CARD_TASKS, recent_iso, *CARD_TASKS, *excl_params, *deck_params),
+    ).fetchone()
+    if pair_row is not None:
+        return _served(pair_row)
 
     # Review sessions serve due cards and nothing else — no new-word intros, no
     # drilling-ahead reuse. Empty the instant nothing's due.

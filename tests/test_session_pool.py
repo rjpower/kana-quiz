@@ -112,16 +112,18 @@ def test_answering_one_direction_introduces_the_sibling(
 
 def test_new_pool_runs_dry_returns_204(loaded_client: TestClient) -> None:
     # Answer every word — answering is what retires a word from the new pool,
-    # so the loop needs no exclude list: a word once answered never comes back.
-    seen: set[int] = set()
+    # so the loop needs no exclude list. A word comes back once, in its other
+    # direction, and then never again.
+    seen: set[tuple[int, str]] = set()
     for _ in range(200):
         r = loaded_client.get("/api/session/next?pool=new")
         if r.status_code == 204:
             break
         q = r.json()
-        assert q["word_id"] not in seen
-        seen.add(q["word_id"])
+        assert (q["word_id"], q["direction"]) not in seen
+        seen.add((q["word_id"], q["direction"]))
         _answer(loaded_client, q)
+    seen = {word_id for word_id, _ in seen}
     # The sample deck is small; once drained, new pool 204s.
     assert len(seen) == 10
     assert loaded_client.get("/api/session/next?pool=new").status_code == 204

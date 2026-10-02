@@ -21,9 +21,10 @@ def _introduce(client: TestClient, n: int) -> list[int]:
     the "new" pool and count for nothing here.
     """
     seen: list[int] = []
-    for _ in range(n):
-        ex = "&exclude=" + ",".join(map(str, seen)) if seen else ""
-        r = client.get(f"/api/session/next?pool=new{ex}")
+    # A fresh word's sibling direction is served right after its debut, so
+    # the loop answers whatever comes and stops at n distinct words.
+    while len(seen) < n:
+        r = client.get("/api/session/next?pool=new")
         if r.status_code != 200:
             break
         q = r.json()
@@ -38,7 +39,8 @@ def _introduce(client: TestClient, n: int) -> list[int]:
                 "latency_ms": 1200,
             },
         )
-        seen.append(q["word_id"])
+        if q["word_id"] not in seen:
+            seen.append(q["word_id"])
     return seen
 
 
@@ -118,3 +120,29 @@ def test_overview_excludes_ignored_words(loaded_client: TestClient) -> None:
     assert after["total_words"] == 9
     # The ignored word was introduced then ignored → not new, not counted active.
     assert after["new_available"] == 9
+
+
+def test_overview_counts_words_learned_today_and_this_week(
+    loaded_client: TestClient, db_path: Path
+) -> None:
+    ids = _introduce(loaded_client, 3)
+    assert len(ids) == 3
+    ov = loaded_client.get("/api/stats/overview?tz_offset=420").json()
+    assert ov["learned_today"] == 3
+    assert ov["learned_this_week"] == 3
+
+    # Push one word's first sighting back ten days: it leaves both windows.
+    conn = sqlite3.connect(db_path)
+    old = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+    conn.execute(
+        "UPDATE task_state SET introduced_at = ? WHERE word_id = ?", (old, ids[0])
+    )
+    # And one back three days: out of today, still inside the week.
+    mid = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+    conn.execute(
+        "UPDATE task_state SET introduced_at = ? WHERE word_id = ?", (mid, ids[1])
+    )
+    conn.commit()
+    ov = loaded_client.get("/api/stats/overview?tz_offset=420").json()
+    assert ov["learned_today"] == 1
+    assert ov["learned_this_week"] == 2

@@ -146,11 +146,36 @@ def get_stats(conn: sqlite3.Connection = Depends(get_conn)) -> Stats:
     return _summary(conn)
 
 
-def _overview(conn: sqlite3.Connection) -> StatsOverview:
+def _learned_since(conn: sqlite3.Connection, since_iso: str) -> int:
+    """Words whose first answer in either recall direction came after ``since``."""
+    return conn.execute(
+        """
+        SELECT COUNT(*) AS n FROM (
+          SELECT ts.word_id, MIN(ts.introduced_at) AS first_seen
+            FROM task_state ts JOIN words w ON w.id = ts.word_id
+           WHERE ts.task IN (?, ?) AND ts.introduced_at IS NOT NULL
+             AND w.ignored_at IS NULL
+           GROUP BY ts.word_id
+        ) WHERE first_seen >= ?
+        """,
+        (*CARD_TASKS, since_iso),
+    ).fetchone()["n"]
+
+
+def _overview(conn: sqlite3.Connection, tz_offset: int = 0) -> StatsOverview:
     """Landing-page rollup: due lookahead + mastery distribution + 7-day
-    efficiency. All counts are over the active (non-ignored) study set."""
+    efficiency. All counts are over the active (non-ignored) study set.
+
+    ``tz_offset`` is the client's minutes behind UTC (JavaScript's
+    ``getTimezoneOffset``), so "today" starts at the learner's midnight."""
     now = datetime.now(timezone.utc)
     now_iso = now.isoformat()
+    local_midnight = (now - timedelta(minutes=tz_offset)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    day_start = local_midnight + timedelta(minutes=tz_offset)
+    learned_today = _learned_since(conn, day_start.isoformat())
+    learned_this_week = _learned_since(conn, (day_start - timedelta(days=6)).isoformat())
     hour_iso = (now + timedelta(hours=1)).isoformat()
     day_iso = (now + timedelta(hours=24)).isoformat()
     seven_days_ago_iso = (now - timedelta(days=7)).isoformat()
@@ -274,13 +299,17 @@ def _overview(conn: sqlite3.Connection) -> StatsOverview:
         reviews_last_7_days=reviews_7d,
         accuracy_last_7_days=accuracy,
         median_latency_ms=median_ms,
+        learned_today=learned_today,
+        learned_this_week=learned_this_week,
     )
 
 
 @router.get("/stats/overview", response_model=StatsOverview)
-def get_overview(conn: sqlite3.Connection = Depends(get_conn)) -> StatsOverview:
+def get_overview(
+    tz_offset: int = 0, conn: sqlite3.Connection = Depends(get_conn)
+) -> StatsOverview:
     """Compact landing-page summary — due lookahead, mastery mix, efficiency."""
-    return _overview(conn)
+    return _overview(conn, tz_offset)
 
 
 @router.get("/stats/detailed", response_model=DetailedStats)

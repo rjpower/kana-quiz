@@ -162,9 +162,10 @@ def test_low_level_deck_drained_before_default(
         data={"new_deck_name": "Priority", "new_deck_level": "1"},
     )
 
-    # The next two introductions should come from the level-1 deck.
+    # The next two introductions should come from the level-1 deck. Each word
+    # is asked in both directions before the next debut, so four answers.
     seen = set()
-    for _ in range(2):
+    for _ in range(4):
         q = client.get("/api/session/next").json()
         seen.add(q["word_id"])
         # answer correctly so introduction tracking moves on

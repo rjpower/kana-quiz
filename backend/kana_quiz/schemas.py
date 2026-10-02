@@ -275,6 +275,10 @@ class StatsOverview(BaseModel):
     reviews_last_7_days: int
     accuracy_last_7_days: float | None
     median_latency_ms: int | None
+    # Words first answered since the learner's local midnight, and since the
+    # midnight six days before that.
+    learned_today: int = 0
+    learned_this_week: int = 0
 
 
 class MatchTile(BaseModel):

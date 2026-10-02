@@ -55,6 +55,8 @@ interface Overview {
   reviews_last_7_days: number
   accuracy_last_7_days: number | null
   median_latency_ms: number | null
+  learned_today: number
+  learned_this_week: number
 }
 const overview = ref<Overview | null>(null)
 
@@ -167,7 +169,7 @@ const speedLabel = computed(
 
 async function loadOverview() {
   try {
-    const resp = await fetch('/api/stats/overview')
+    const resp = await fetch(`/api/stats/overview?tz_offset=${new Date().getTimezoneOffset()}`)
     if (resp.ok) overview.value = (await resp.json()) as Overview
   } catch {
     // Non-fatal — the summary is decorative; the user can still hit Start.
@@ -916,6 +918,14 @@ const fanfare = computed(() => {
         <div class="due-cell">
           <span class="due-num">{{ overview.new_available }}</span>
           <span class="due-lbl">new to learn</span>
+        </div>
+        <div class="due-cell" :class="{ on: overview.learned_today > 0 }">
+          <span class="due-num">{{ overview.learned_today }}</span>
+          <span class="due-lbl">learned today</span>
+        </div>
+        <div class="due-cell">
+          <span class="due-num">{{ overview.learned_this_week }}</span>
+          <span class="due-lbl">this week</span>
         </div>
       </div>
 
@@ -2585,7 +2595,7 @@ const fanfare = computed(() => {
 /* --- Due lookahead --- */
 .due-schedule {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 8px;
   margin-bottom: 16px;
 }

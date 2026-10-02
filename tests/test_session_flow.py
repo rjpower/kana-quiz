@@ -264,7 +264,8 @@ def test_detailed_stats_histogram_and_maturity(loaded_client: TestClient) -> Non
     # introduced (so they're not all "new").
     mc = body["maturity_counts"]
     assert sum(mc.values()) == 10
-    assert mc["new"] <= 8
+    # Two answers are one word in both directions, so one word left "new".
+    assert mc["new"] <= 9
 
 
 def test_word_at_threshold_returns_type_mode(
