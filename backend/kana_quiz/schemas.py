@@ -59,6 +59,10 @@ class SentenceOut(BaseModel):
     # Furigana for ``japanese`` — the example-sentence reveal renders this as
     # ruby. Empty list when the sentence is pure kana (no kanji to annotate).
     japanese_ruby: list[RubySegment] = Field(default_factory=list)
+    # 'generated', or the tag of the show the line was taken from.
+    source: str = "generated"
+    # Where to fetch the spoken sentence; carries a token for the text.
+    audio_url: str = ""
 
 
 class NextQuestion(BaseModel):

@@ -98,7 +98,41 @@ class Sentence:
     # cloze feature; the prefetch worker treats empty as a cache miss
     # and regenerates the row with the form populated.
     target_form: str = ""
+    # 'generated' for a Gemini-written sentence; a tag such as 'hotspot' when
+    # the sentence is a line from a show's transcript.
+    source: str = "generated"
 
+
+_ANNOTATE_TEMPLATE = """You are helping an English-speaking Japanese vocabulary learner.
+
+Target word:
+  Kana: {kana}
+  Kanji: {kanji}
+  English meaning: {english}
+
+The learner met this word in the following line of dialogue from a Japanese
+TV drama. Keep the line exactly as given; do not rewrite it.
+
+Line: {japanese}
+
+Produce THREE things:
+
+1. A natural (not literal) English translation of the line. The line is
+   spoken dialogue and may be a fragment; translate it as such.
+
+2. A vivid, memorable English mnemonic (1-2 sentences, max ~30 words) that
+   connects the KANA reading to the English meaning. Sound-alikes, imagery
+   or a tiny mini-story; concrete and specific.
+
+3. The literal target_form: the EXACT substring of the line that is the
+   target word, in whatever form it appears (a conjugation, a katakana
+   spelling, or part of a compound). MUST be a verbatim substring of the
+   line, no surrounding punctuation. Empty string if the word is not in
+   the line.
+
+Reply with ONLY a JSON object of the form:
+{{"english": "...", "mnemonic": "...", "target_form": "..."}}
+"""
 
 _PROMPT_TEMPLATE = """You are helping an English-speaking Japanese vocabulary learner.
 
@@ -616,6 +650,44 @@ def generate_sentence(word: Word, *, model: str = DEFAULT_MODEL) -> Sentence:
     # substring of the sentence (very rare, usually a stray punctuation
     # difference), drop it. The prefetch worker will treat the empty
     # string as "needs another shot."
+    if target_form and target_form not in japanese:
+        target_form = ""
+    return Sentence(
+        japanese=japanese,
+        english=str(data["english"]),
+        mnemonic=str(data.get("mnemonic", "")),
+        target_form=target_form,
+    )
+
+
+def annotate_sentence(
+    word: Word, japanese: str, *, model: str = DEFAULT_MODEL
+) -> Sentence:
+    """Translate a given line and locate the target word in it.
+
+    The transcript line is kept verbatim; Gemini supplies the English, the
+    mnemonic and ``target_form``. Raises :class:`GeminiUnavailable` when
+    ``GEMINI_API_KEY`` is missing.
+    """
+    from google.genai import types
+
+    client = _get_client()
+    prompt = _ANNOTATE_TEMPLATE.format(
+        kana=word.kana,
+        kanji=word.kanji or "(none)",
+        english=word.english,
+        japanese=japanese,
+    )
+    resp = client.models.generate_content(  # type: ignore[attr-defined]
+        model=model,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            temperature=0.4,
+        ),
+    )
+    data = json.loads((resp.text or "").strip())
+    target_form = str(data.get("target_form", "") or "").strip()
     if target_form and target_form not in japanese:
         target_form = ""
     return Sentence(
@@ -1191,7 +1263,7 @@ def get_cached_sentence(
     worker fill the row for next time.
     """
     row = conn.execute(
-        "SELECT japanese, english, mnemonic, target_form "
+        "SELECT japanese, english, mnemonic, target_form, source "
         "FROM sentence_cache WHERE word_id = ? AND model = ?",
         (word.id, model),
     ).fetchone()
@@ -1202,6 +1274,7 @@ def get_cached_sentence(
         english=row["english"],
         mnemonic=row["mnemonic"] or "",
         target_form=row["target_form"] or "",
+        source=row["source"],
     )
 
 
@@ -1218,7 +1291,7 @@ def get_or_create_sentence(
     :func:`locate_target_form` rather than re-rolling Gemini.
     """
     row = conn.execute(
-        "SELECT japanese, english, mnemonic, target_form "
+        "SELECT japanese, english, mnemonic, target_form, source "
         "FROM sentence_cache WHERE word_id = ? AND model = ?",
         (word.id, model),
     ).fetchone()
@@ -1228,6 +1301,7 @@ def get_or_create_sentence(
             english=row["english"],
             mnemonic=row["mnemonic"] or "",
             target_form=row["target_form"] or "",
+            source=row["source"],
         )
 
     sentence = generate_sentence(word, model=model)

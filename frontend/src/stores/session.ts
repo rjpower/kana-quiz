@@ -212,6 +212,9 @@ export interface SentencePayload {
   english: string
   mnemonic?: string
   japanese_ruby?: RubySegment[]
+  // 'generated', or the tag of the show the line was taken from.
+  source?: string
+  audio_url?: string
 }
 
 // One run of a furigana-annotated sentence. `t` is the surface text; `r` is
@@ -267,6 +270,7 @@ const ROUND_SIZE_KEY = 'kana-quiz:round-size'
 // Auto-reveal the mnemonic + example sentence when a brand-new card first
 // appears (a teaching moment before the quiz). Defaults on.
 const AUTO_REVEAL_KEY = 'kana-quiz:auto-reveal'
+const SENTENCE_AUDIO_KEY = 'kana-quiz:sentence-audio'
 // How many new words a focused "Learn new cards" session introduces at once.
 export const NEW_CARDS_OPTIONS = [5, 10, 15, 20] as const
 export const NEW_CARDS_DEFAULT = 10
@@ -644,6 +648,17 @@ export const useSessionStore = defineStore('session', () => {
   function setAutoReveal(on: boolean) {
     autoRevealNewCards.value = on
     persistSetting(AUTO_REVEAL_KEY, on)
+  }
+
+  // Speak the example sentence once the answer is shown, so the word is
+  // heard in context on every card and not only on the intro.
+  const sentenceAudioOnReveal = ref<boolean>(
+    loadSetting(SENTENCE_AUDIO_KEY, (v) => (typeof v === 'boolean' ? v : null), true),
+  )
+
+  function setSentenceAudioOnReveal(on: boolean) {
+    sentenceAudioOnReveal.value = on
+    persistSetting(SENTENCE_AUDIO_KEY, on)
   }
 
   // Speed preset — drives the "fast" bar for the flame + burndown graduation.
@@ -1939,6 +1954,8 @@ export const useSessionStore = defineStore('session', () => {
     setRoundSize,
     autoRevealNewCards,
     setAutoReveal,
+    sentenceAudioOnReveal,
+    setSentenceAudioOnReveal,
     speedPreference,
     setSpeedPreference,
     burndownEnabled,

@@ -194,7 +194,7 @@ def test_interleaver_returns_listening_when_dice_under_threshold(
     nxt = loaded_client.get("/api/session/next").json()
     assert nxt["mode"] == "sentence_listen", nxt
     assert nxt["direction"] == "ja2en"
-    assert nxt["audio_url"] == f"/api/audio/sentence/{word_id}"
+    assert nxt["audio_url"].startswith(f"/api/audio/sentence/{word_id}?s=")
     assert nxt["expected_translation"] == "This is a dog."
     assert nxt["sentence_japanese"] == "これは犬です。"
     assert nxt["prompt"] == ""

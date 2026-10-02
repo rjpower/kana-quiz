@@ -51,6 +51,8 @@ async function loadBuffer(url: string): Promise<AudioBuffer | null> {
   return buf
 }
 
+// Resolves when playback ends (or is cut off by a later play), so a caller
+// can chain a second clip after the first.
 export async function playAudioUrl(url: string): Promise<void> {
   const c = getCtx()
   if (!c) throw new Error('no AudioContext')
@@ -64,11 +66,15 @@ export async function playAudioUrl(url: string): Promise<void> {
   const src = c.createBufferSource()
   src.buffer = buf
   src.connect(c.destination)
-  src.onended = () => {
-    if (currentSource === src) currentSource = null
-  }
+  const ended = new Promise<void>((resolve) => {
+    src.onended = () => {
+      if (currentSource === src) currentSource = null
+      resolve()
+    }
+  })
   src.start()
   currentSource = src
+  await ended
 }
 
 // Best-effort prefetch — used by the round-start prefetch loop.

@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import random
+import hashlib
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -132,6 +133,17 @@ for _h, _r in _ROMAJI_HIRA.items():
 _SMALL = set("ゃゅょぁぃぅぇぉャュョァィゥェォ")
 _SOKUON = set("っッ")
 
+
+
+def sentence_audio_url(word_id: int, japanese: str) -> str:
+    """URL of the sentence audio, keyed on the text as well as the word.
+
+    The audio route answers with a year-long immutable cache header, so a
+    sentence that was replaced (a transcript line standing in for the
+    generated one) needs a new URL to be heard.
+    """
+    token = hashlib.sha1(japanese.encode("utf-8")).hexdigest()[:8]
+    return f"/api/audio/sentence/{word_id}?s={token}"
 
 def _romaji_keystrokes(kana: str) -> int:
     """Estimate Hepburn romaji keystroke count for a kana string.
@@ -274,7 +286,7 @@ def _build_listening_question(pick: ListeningPick) -> NextQuestion:
         kanji=None,
         failure_streak=0,
         time_limit_ms=_listen_window_ms(expected),
-        audio_url=f"/api/audio/sentence/{pick.word.id}",
+        audio_url=sentence_audio_url(pick.word.id, pick.sentence_ja or ""),
         expected_translation=expected,
         sentence_japanese=pick.sentence_ja,
         sentence_japanese_ruby=furigana_segments(pick.sentence_ja or ""),
@@ -1075,6 +1087,8 @@ def _build_next_question(
                 english=cached.english,
                 mnemonic=cached.mnemonic,
                 japanese_ruby=furigana_segments(cached.japanese),
+                source=cached.source,
+                audio_url=sentence_audio_url(target.id, cached.japanese),
             )
 
     rng = random.Random()
@@ -1325,6 +1339,8 @@ def word_sentence(
         english=sentence.english,
         mnemonic=sentence.mnemonic,
         japanese_ruby=furigana_segments(sentence.japanese),
+        source=sentence.source,
+        audio_url=sentence_audio_url(word.id, sentence.japanese),
     )
 
 

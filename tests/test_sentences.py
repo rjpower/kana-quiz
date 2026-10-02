@@ -5,6 +5,8 @@ never hit the Gemini API. The cache assertion mirrors the audio test:
 first call generates, second call serves from sqlite.
 """
 
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -78,3 +80,28 @@ def test_sentence_endpoint_503_when_unconfigured(
     word_id = loaded_client.get("/api/session/next").json()["word_id"]
     resp = loaded_client.get(f"/api/words/{word_id}/sentence")
     assert resp.status_code == 503
+
+
+def test_sentence_payload_carries_source_and_audio_url(
+    loaded_client: TestClient, db_path: Path
+) -> None:
+    """A transcript line is labeled by its source, and the audio URL changes
+    with the text so a replaced sentence is not served from the browser cache."""
+    import sqlite3
+
+    q = loaded_client.get("/api/session/next?pool=new").json()
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "INSERT INTO sentence_cache (word_id, model, japanese, english, source, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        (q["word_id"], gemini.DEFAULT_MODEL, "まあ だから", "Well, so.", "hotspot", "2026-10-02"),
+    )
+    conn.commit()
+    body = loaded_client.get(f"/api/words/{q['word_id']}/sentence").json()
+    assert body["source"] == "hotspot"
+    assert body["audio_url"].startswith(f"/api/audio/sentence/{q['word_id']}?s=")
+    token = body["audio_url"].split("s=")[1]
+    conn.execute("UPDATE sentence_cache SET japanese = ? WHERE word_id = ?", ("まあ いいか", q["word_id"]))
+    conn.commit()
+    again = loaded_client.get(f"/api/words/{q['word_id']}/sentence").json()
+    assert again["audio_url"].split("s=")[1] != token

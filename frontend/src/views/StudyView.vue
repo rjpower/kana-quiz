@@ -181,8 +181,17 @@ interface SentenceState {
   japaneseRuby?: RubySegment[]
   english?: string
   mnemonic?: string
+  source?: string
+  audioUrl?: string
   loading?: boolean
   error?: string
+}
+// Shown under a sentence that came from a transcript rather than Gemini.
+const SOURCE_LABELS: Record<string, string> = { hotspot: 'The Hot Spot' }
+function sourceLabel(wordId: number): string | null {
+  const source = sentences.get(wordId)?.source
+  if (!source || source === 'generated') return null
+  return SOURCE_LABELS[source] ?? source
 }
 // Per-word example-sentence cache. Sentences are cached server-side too,
 // but keeping the result in memory means a re-locked card (e.g. after a
@@ -235,6 +244,8 @@ async function fetchSentence(wordId: number) {
       japaneseRuby: data.japanese_ruby || [],
       english: data.english,
       mnemonic: data.mnemonic || '',
+      source: data.source || 'generated',
+      audioUrl: data.audio_url || '',
     })
   } catch (e) {
     sentences.set(wordId, { error: (e as Error).message })
@@ -262,6 +273,8 @@ watch(
         japaneseRuby: c.sentence.japanese_ruby || [],
         english: c.sentence.english,
         mnemonic: c.sentence.mnemonic || '',
+        source: c.sentence.source || 'generated',
+        audioUrl: c.sentence.audio_url || '',
       })
     }
   },
@@ -336,12 +349,30 @@ watch(
   },
 )
 
+// Spoken example on reveal: the sentence is fetched (cached server-side) and
+// played after the word, so the learner hears the word in context on every
+// card. A card that moves on before the fetch lands plays nothing.
+async function playSentenceOnReveal(wordId: number) {
+  if (!store.sentenceAudioOnReveal || store.audioDisabled) return
+  await fetchSentence(wordId)
+  if (store.current?.word_id !== wordId || !store.locked) return
+  const url = sentences.get(wordId)?.audioUrl
+  if (!url) return
+  try {
+    await playAudioUrl(versionedAudioUrl(url))
+  } catch (err) {
+    if ((err as Error).name === 'NotAllowedError') audioBlocked.value = true
+  }
+}
+
 watch(
   () => store.locked,
-  (locked) => {
+  async (locked) => {
     if (!locked || !store.current) return
     if (store.current.mode === 'sentence_listen') return
-    if (store.current.direction === 'en2ja') void playAudio(store.current.word_id)
+    const wordId = store.current.word_id
+    if (store.current.direction === 'en2ja') await playAudio(wordId)
+    void playSentenceOnReveal(wordId)
   },
 )
 
@@ -1143,6 +1174,19 @@ const fanfare = computed(() => {
             </span>
           </span>
         </label>
+        <label class="answer-type reveal-toggle">
+          <input
+            type="checkbox"
+            :checked="store.sentenceAudioOnReveal"
+            @change="store.setSentenceAudioOnReveal(($event.target as HTMLInputElement).checked)"
+          />
+          <span class="answer-type-text">
+            <span class="answer-type-label">Speak the example on reveal</span>
+            <span class="answer-type-hint">
+              After the answer shows, play the example sentence so the word is heard in context.
+            </span>
+          </span>
+        </label>
       </fieldset>
     </details>
 
@@ -1210,6 +1254,9 @@ const fanfare = computed(() => {
       </div>
       <div class="sentence-en">
         {{ sentences.get(store.current.word_id)!.english }}
+      </div>
+      <div v-if="sourceLabel(store.current.word_id)" class="sentence-source">
+        From {{ sourceLabel(store.current.word_id) }}
       </div>
     </div>
     <div
@@ -1408,6 +1455,9 @@ const fanfare = computed(() => {
         </div>
         <div class="sentence-en">
           {{ sentences.get(store.current.word_id)!.english }}
+        </div>
+        <div v-if="sourceLabel(store.current.word_id)" class="sentence-source">
+          From {{ sourceLabel(store.current.word_id) }}
         </div>
       </div>
       <div v-if="sentences.get(store.current.word_id)?.error" class="sentence-error">
@@ -2270,6 +2320,12 @@ const fanfare = computed(() => {
   border: 1px solid var(--border);
   border-radius: 8px;
   text-align: left;
+}
+.sentence-source {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.02em;
 }
 .sentence-ja {
   font-size: 17px;
