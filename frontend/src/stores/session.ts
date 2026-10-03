@@ -650,8 +650,8 @@ export const useSessionStore = defineStore('session', () => {
     persistSetting(AUTO_REVEAL_KEY, on)
   }
 
-  // Speak the example sentence once the answer is shown, so the word is
-  // heard in context on every card and not only on the intro.
+  // Speak the example sentence once the answer shows on a new word or a
+  // miss, so a word still being learned is heard in context.
   const sentenceAudioOnReveal = ref<boolean>(
     loadSetting(SENTENCE_AUDIO_KEY, (v) => (typeof v === 'boolean' ? v : null), true),
   )

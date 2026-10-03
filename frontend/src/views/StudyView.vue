@@ -290,13 +290,23 @@ watch(
   (outcome) => {
     if (!outcome || !store.current) return
     if (!outcome.correct) void fetchSentence(store.current.word_id)
+    // The spoken example is for a word still being learned: a miss, or a
+    // word just met. A correct review stays quiet.
+    if (!outcome.correct || store.current.introduction) {
+      void playSentenceOnReveal(store.current.word_id)
+    }
   },
 )
+
+// The word clip in flight, so the example sentence can follow it instead of
+// cutting it off.
+let wordPlaying: Promise<void> = Promise.resolve()
 
 async function playAudio(wordId: number) {
   if (store.audioDisabled) return
   try {
-    await playAudioUrl(wordAudioUrl(wordId))
+    wordPlaying = playAudioUrl(wordAudioUrl(wordId))
+    await wordPlaying
     audioBlocked.value = false
   } catch (err) {
     const name = (err as Error).name
@@ -349,12 +359,13 @@ watch(
   },
 )
 
-// Spoken example on reveal: the sentence is fetched (cached server-side) and
-// played after the word, so the learner hears the word in context on every
-// card. A card that moves on before the fetch lands plays nothing.
+// Spoken example: the sentence is fetched (cached server-side) and played
+// after the word clip. A card that moves on before the fetch lands plays
+// nothing.
 async function playSentenceOnReveal(wordId: number) {
   if (!store.sentenceAudioOnReveal || store.audioDisabled) return
   await fetchSentence(wordId)
+  await wordPlaying.catch(() => {})
   if (store.current?.word_id !== wordId || !store.locked) return
   const url = sentences.get(wordId)?.audioUrl
   if (!url) return
@@ -367,12 +378,10 @@ async function playSentenceOnReveal(wordId: number) {
 
 watch(
   () => store.locked,
-  async (locked) => {
+  (locked) => {
     if (!locked || !store.current) return
     if (store.current.mode === 'sentence_listen') return
-    const wordId = store.current.word_id
-    if (store.current.direction === 'en2ja') await playAudio(wordId)
-    void playSentenceOnReveal(wordId)
+    if (store.current.direction === 'en2ja') void playAudio(store.current.word_id)
   },
 )
 
@@ -1181,9 +1190,9 @@ const fanfare = computed(() => {
             @change="store.setSentenceAudioOnReveal(($event.target as HTMLInputElement).checked)"
           />
           <span class="answer-type-text">
-            <span class="answer-type-label">Speak the example on reveal</span>
+            <span class="answer-type-label">Speak the example on new words and misses</span>
             <span class="answer-type-hint">
-              After the answer shows, play the example sentence so the word is heard in context.
+              After the answer shows on a new word or a miss, play the example sentence.
             </span>
           </span>
         </label>
