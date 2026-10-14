@@ -1410,10 +1410,11 @@ export const useSessionStore = defineStore('session', () => {
     locked.value = false
   }
 
-  // Fisher-Yates, in place. Used on the initial drill queue so a burndown isn't
-  // replayed in the order the misses happened — with a short queue that order is
-  // still fresh in the user's head, and answering in it tests sequence recall
-  // rather than the word.
+  // Fisher-Yates, in place. Used once, on the initial drill queue, so a
+  // burndown isn't replayed in the order the misses happened — with a short
+  // queue that order is still fresh in the user's head, and answering in it
+  // tests sequence recall rather than the word. The order then holds for the
+  // whole drill (see requeueDrillItem).
   function shuffleInPlace<T>(xs: T[]): T[] {
     for (let i = xs.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1))
@@ -1422,20 +1423,16 @@ export const useSessionStore = defineStore('session', () => {
     return xs
   }
 
-  // Put a word back for another rep at a random position rather than the back.
+  // Put a word back for another rep at the back of the queue.
   //
-  // Always-to-the-back turned a small queue into a strict rotation: with three
-  // words left it's A-B-C-A-B-C forever, and the user starts riding the rhythm
-  // instead of recalling. A random slot keeps the gap unpredictable, so a fast
-  // answer has to come from actually knowing the word.
-  //
-  // Never index 0 when something else is queued: that would ask the same word
-  // twice in a row, and the interleaving gap — recalling something else before
-  // coming back — is what makes the second rep worth anything.
+  // The queue is shuffled once when the drill starts, and a re-queued word
+  // waits behind every word still queued. The user meets every pending word
+  // before any word comes round again, so the second rep of a word is always
+  // separated from the first by the whole rest of the queue. A random slot
+  // gave a shorter gap: a word could return two cards later while another
+  // waited through the whole pass.
   function requeueDrillItem(item: DrillItem) {
-    const q = drillQueue.value
-    const idx = q.length === 0 ? 0 : 1 + Math.floor(Math.random() * q.length)
-    q.splice(idx, 0, item)
+    drillQueue.value.push(item)
   }
 
   async function _drillSubmit(chosen: number | null, timedOut: boolean) {
