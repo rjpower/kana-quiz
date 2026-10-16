@@ -660,6 +660,75 @@ def generate_sentence(word: Word, *, model: str = DEFAULT_MODEL) -> Sentence:
     )
 
 
+@dataclass(frozen=True)
+class Entry:
+    """A dictionary entry for one term, as the quick-add route stores it."""
+
+    kana: str
+    kanji: str | None
+    english: str
+
+
+_ENTRY_TEMPLATE = """You are building a flashcard for an English-speaking Japanese learner.
+
+The learner typed one term. It is English or Japanese (kanji, kana or romaji),
+and it may carry a trailing particle, punctuation or copula to strip.
+
+Term: {term}
+{taken}
+Answer with a JSON object with exactly these keys:
+
+  "kana": the Japanese word in hiragana (katakana for a loanword), in its
+          dictionary form. For an English term choose the most common
+          everyday Japanese word with that meaning.
+  "kanji": the usual written form with kanji, or null when the word is
+           normally written in kana alone.
+  "english": a short English gloss of 1-4 words. Where the core gloss is
+             shared by other common Japanese words, append a disambiguator
+             in parentheses, as in "order (a command)" or "to see (meet)".
+
+No prose, no markdown fences, no commentary."""
+
+
+def resolve_term(term: str, *, taken: tuple[str, ...] = (), model: str = DEFAULT_MODEL) -> Entry:
+    """Ask Gemini for the flashcard behind one typed term.
+
+    ``taken`` lists glosses already used by other words in the deck; the
+    model is told to word its gloss apart from them, since the gloss is the
+    en→ja prompt and has to be unique. Raises :class:`GeminiUnavailable`
+    when ``GEMINI_API_KEY`` is missing.
+    """
+    from google.genai import types
+
+    client = _get_client()
+    note = ""
+    if taken:
+        listed = ", ".join(f'"{t}"' for t in taken)
+        note = (
+            "\nThese glosses are already used by other words and must not be"
+            f" repeated exactly; add a disambiguator: {listed}\n"
+        )
+    prompt = _ENTRY_TEMPLATE.format(term=term, taken=note)
+    resp = client.models.generate_content(  # type: ignore[attr-defined]
+        model=model,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            temperature=0.2,
+        ),
+    )
+    data = json.loads((resp.text or "").strip())
+    kana = str(data.get("kana", "") or "").strip()
+    english = str(data.get("english", "") or "").strip()
+    if not kana or not english:
+        raise ValueError(f"model answered without kana or english for {term!r}")
+    raw_kanji = data.get("kanji")
+    kanji = str(raw_kanji).strip() if raw_kanji else None
+    if kanji == kana:
+        kanji = None
+    return Entry(kana=kana, kanji=kanji or None, english=english)
+
+
 def annotate_sentence(
     word: Word, japanese: str, *, model: str = DEFAULT_MODEL
 ) -> Sentence:

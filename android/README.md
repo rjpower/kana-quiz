@@ -3,7 +3,12 @@
 A ~1 MB APK that opens `https://kana.rjp.io` full-screen with no browser UI. It
 is **not** a port — Chrome renders the same site, so `bin/sync kana-quiz`
 deploys still go live instantly and the APK only needs rebuilding when
-something in `twa-manifest.json` changes (name, icon, colours, signing key).
+something in `twa-manifest.json` changes (name, icon, colours, signing key,
+share target).
+
+The manifest declares a share target: text shared to the app from another
+Android app opens `/quick`, which adds it as a card. The web manifest carries
+the same `share_target`, so an installed PWA offers it too.
 
 Because a TWA runs on Chrome's engine it shares Chrome's cookie jar, so the
 `kana_auth` cookie carries over — if you're logged in in Chrome, you're logged

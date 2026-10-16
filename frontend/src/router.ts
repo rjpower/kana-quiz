@@ -7,6 +7,7 @@ export const router = createRouter({
     { path: '/login', component: () => import('./views/LoginView.vue') },
     { path: '/study', component: () => import('./views/StudyView.vue') },
     { path: '/study/match', component: () => import('./views/MatchView.vue') },
+    { path: '/quick', component: () => import('./views/QuickAddView.vue') },
     { path: '/import', component: () => import('./views/ImportView.vue') },
     { path: '/stats', component: () => import('./views/StatsView.vue') },
     { path: '/decks', component: () => import('./views/DecksView.vue') },

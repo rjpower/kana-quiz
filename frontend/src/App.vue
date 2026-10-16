@@ -7,6 +7,7 @@ import ToastHost from './components/ToastHost.vue'
   <div class="app-shell">
     <nav class="nav">
       <RouterLink to="/study">Study</RouterLink>
+      <RouterLink to="/quick">Quick</RouterLink>
       <RouterLink to="/import">Import</RouterLink>
       <RouterLink to="/decks">Decks</RouterLink>
       <RouterLink to="/stats">Stats</RouterLink>

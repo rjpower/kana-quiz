@@ -26,6 +26,22 @@ class RubySegment(BaseModel):
     r: str | None = None
 
 
+class QuickAddIn(BaseModel):
+    text: str
+
+
+class QuickAddOut(BaseModel):
+    """The word a quick add made, or the one it found already in a deck."""
+
+    id: int
+    kana: str
+    kanji: str | None
+    english: str
+    deck_id: int
+    deck_name: str
+    created: bool
+
+
 class ImportReportOut(BaseModel):
     inserted: int
     updated: int

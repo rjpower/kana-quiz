@@ -20,8 +20,8 @@
     "path": "/home/power/.android-keys/kana-quiz.keystore",
     "alias": "kana"
   },
-  "appVersionName": "1.0.0",
-  "appVersionCode": 1,
+  "appVersionName": "1.1.0",
+  "appVersionCode": 2,
   "shortcuts": [],
   "generatorApp": "bubblewrap-cli",
   "webManifestUrl": "https://kana.rjp.io/manifest.webmanifest",
@@ -45,5 +45,14 @@
   "additionalTrustedOrigins": [],
   "retainedBundles": [],
   "displayOverride": [],
-  "appVersion": "1.0.0"
+  "appVersion": "1.1.0",
+  "shareTarget": {
+    "action": "/quick",
+    "method": "GET",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url"
+    }
+  }
 }
