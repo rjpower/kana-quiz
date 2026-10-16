@@ -91,7 +91,11 @@ def quick_add(
         entry = gemini.resolve_term(term)
     except gemini.GeminiUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    existing = conn.execute("SELECT * FROM words WHERE kana = ?", (entry.kana,)).fetchone()
+    # A する verb and its noun are one card: 目撃する is not filed beside 目撃.
+    stem = entry.kana.removesuffix("する")
+    existing = conn.execute(
+        "SELECT * FROM words WHERE kana IN (?, ?)", (stem, stem + "する")
+    ).fetchone()
     if existing is not None:
         return _found(conn, existing, created=False)
     clash = conn.execute(

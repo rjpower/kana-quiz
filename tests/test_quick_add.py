@@ -18,6 +18,8 @@ def fake_resolve(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, tuple[str, 
         "犬": gemini.Entry(kana="いぬ", kanji="犬", english="dog"),
         "order": gemini.Entry(kana="めいれい", kanji="命令", english="order"),
         "bird": gemini.Entry(kana="とり", kanji="鳥", english="bird"),
+        "to witness": gemini.Entry(kana="もくげきする", kanji="目撃する", english="to witness"),
+        "目撃": gemini.Entry(kana="もくげき", kanji="目撃", english="witnessing"),
     }
 
     def _fake(term: str, *, taken: tuple[str, ...] = (), model: str = gemini.DEFAULT_MODEL):
@@ -66,6 +68,13 @@ def test_quick_add_answers_a_card_that_exists(client: TestClient, fake_resolve, 
     by_english = client.post("/api/words/quick", json={"text": "bird"})
     assert by_english.json()["created"] is False
     assert fake_resolve == [("bird", ())]
+
+
+def test_a_suru_verb_is_its_noun(client: TestClient, fake_resolve) -> None:
+    noun = client.post("/api/words/quick", json={"text": "目撃"}).json()
+    verb = client.post("/api/words/quick", json={"text": "to witness"}).json()
+    assert verb["created"] is False
+    assert verb["id"] == noun["id"]
 
 
 def test_quick_add_disambiguates_a_taken_gloss(client: TestClient, fake_resolve) -> None:
