@@ -89,6 +89,19 @@ project generation — run `bubblewrap update --skipVersionUpgrade` first. Those
 two env vars are what keep the build non-interactive; without them it prompts
 for the keystore password.
 
+When bubblewrap's signing step fails with "Given final block not properly
+padded" although `keytool -list` opens the keystore with the same password,
+Gradle has still built `app/build/outputs/apk/release/app-release-unsigned.apk`.
+Sign it by hand:
+
+    BT=~/Android/sdk/build-tools/34.0.0
+    P="$(cat ~/.android-keys/kana-quiz.password)"
+    $BT/zipalign -f -p 4 app/build/outputs/apk/release/app-release-unsigned.apk app-release-unsigned-aligned.apk
+    $BT/apksigner sign --ks ~/.android-keys/kana-quiz.keystore --ks-key-alias kana \
+      --ks-pass "pass:$P" --key-pass "pass:$P" --out app-release-signed.apk app-release-unsigned-aligned.apk
+
+The library the generated project pulls in needs `minSdkVersion` 24.
+
 ## Install
 
     adb install -r app-release-signed.apk
