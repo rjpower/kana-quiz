@@ -95,7 +95,9 @@ onMounted(() => {
         {{ busy ? 'Adding…' : 'Add' }}
       </button>
     </form>
-    <div v-if="error" class="error">{{ error }}</div>
+    <div v-if="error" class="error" role="alert">
+      <strong>Not added.</strong> {{ error }}
+    </div>
 
     <ul v-if="added.length" class="added">
       <li v-for="w in added" :key="w.id" class="card" :class="{ seen: !w.created }">
@@ -134,7 +136,11 @@ onMounted(() => {
 .small { font-size: 12px; }
 .error {
   margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--bad);
   color: var(--bad);
+  overflow-wrap: anywhere;
 }
 .added {
   list-style: none;

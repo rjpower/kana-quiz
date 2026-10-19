@@ -121,3 +121,19 @@ def test_migration_renames_takoboto(client: TestClient, db_path: Path) -> None:
     conn.commit()
     names = {r["name"] for r in conn.execute("SELECT name FROM decks")}
     assert "Quick" in names and "Takoboto" not in names
+
+
+def test_a_refused_model_call_is_503(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A Google-side refusal (quota, billing) answers 503 with the reason."""
+
+    class Models:
+        def generate_content(self, **_: object) -> None:
+            raise RuntimeError("402 RESOURCE_EXHAUSTED prepayment credits are depleted")
+
+    class Client:
+        models = Models()
+
+    monkeypatch.setattr(gemini, "_get_client", lambda: Client())
+    resp = client.post("/api/words/quick", json={"text": "kitchen sink"})
+    assert resp.status_code == 503
+    assert "RESOURCE_EXHAUSTED" in resp.json()["detail"]

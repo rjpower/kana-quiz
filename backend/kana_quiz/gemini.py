@@ -696,7 +696,7 @@ def resolve_term(term: str, *, taken: tuple[str, ...] = (), model: str = DEFAULT
     ``taken`` lists glosses already used by other words in the deck; the
     model is told to word its gloss apart from them, since the gloss is the
     en→ja prompt and has to be unique. Raises :class:`GeminiUnavailable`
-    when ``GEMINI_API_KEY`` is missing.
+    when ``GEMINI_API_KEY`` is missing or the API refuses the call.
     """
     from google.genai import types
 
@@ -709,14 +709,19 @@ def resolve_term(term: str, *, taken: tuple[str, ...] = (), model: str = DEFAULT
             f" repeated exactly; add a disambiguator: {listed}\n"
         )
     prompt = _ENTRY_TEMPLATE.format(term=term, taken=note)
-    resp = client.models.generate_content(  # type: ignore[attr-defined]
-        model=model,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            temperature=0.2,
-        ),
-    )
+    # A refusal from Google (quota, billing, an outage) is the same to the
+    # caller as a missing key: the term cannot be resolved right now.
+    try:
+        resp = client.models.generate_content(  # type: ignore[attr-defined]
+            model=model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.2,
+            ),
+        )
+    except Exception as exc:
+        raise GeminiUnavailable(f"Gemini refused the request: {exc}") from exc
     data = json.loads((resp.text or "").strip())
     kana = str(data.get("kana", "") or "").strip()
     english = str(data.get("english", "") or "").strip()
