@@ -59,6 +59,11 @@ def now() -> datetime:
     return _NOW.get() or datetime.now(timezone.utc)
 
 
+def sql_now() -> str:
+    """The pinned instant in the form SQLite's datetime('now') writes."""
+    return now().strftime("%Y-%m-%d %H:%M:%S")
+
+
 def new_rng() -> random.Random:
     seed = _SEED.get()
     return random.Random(seed) if seed is not None else random.Random()

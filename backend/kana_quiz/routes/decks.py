@@ -120,8 +120,8 @@ def create_deck(
     if payload.pick_order not in ("random", "listed"):
         raise HTTPException(status_code=400, detail="pick_order must be random or listed")
     cur = conn.execute(
-        "INSERT INTO decks (name, level, profile, pick_order) VALUES (?, ?, ?, ?)",
-        (name, payload.level, payload.profile, payload.pick_order),
+        "INSERT INTO decks (name, level, profile, pick_order, created_at) VALUES (?, ?, ?, ?, ?)",
+        (name, payload.level, payload.profile, payload.pick_order, pins.sql_now()),
     )
     deck_id = cur.lastrowid
     row = conn.execute(

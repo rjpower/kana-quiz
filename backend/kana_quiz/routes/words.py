@@ -46,8 +46,8 @@ def _quick_deck_id(conn: sqlite3.Connection) -> int:
     if row is not None:
         return row["id"]
     cur = conn.execute(
-        "INSERT INTO decks (name, level, profile) VALUES (?, ?, 'standard')",
-        (QUICK_DECK, QUICK_DECK_LEVEL),
+        "INSERT INTO decks (name, level, profile, created_at) VALUES (?, ?, 'standard', ?)",
+        (QUICK_DECK, QUICK_DECK_LEVEL, pins.sql_now()),
     )
     return cur.lastrowid  # type: ignore[return-value]
 

@@ -4,7 +4,7 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 
-from kana_quiz import gemini, tts
+from kana_quiz import gemini, pins, tts
 from kana_quiz.csv_import import import_csv
 from kana_quiz.db import get_conn
 from kana_quiz.schemas import ImportReportOut
@@ -56,8 +56,8 @@ async def upload_csv(
         if clash is not None:
             raise HTTPException(status_code=409, detail="deck name already exists")
         cur = conn.execute(
-            "INSERT INTO decks (name, level, profile) VALUES (?, ?, ?)",
-            (name, new_deck_level, new_deck_profile),
+            "INSERT INTO decks (name, level, profile, created_at) VALUES (?, ?, ?, ?)",
+            (name, new_deck_level, new_deck_profile, pins.sql_now()),
         )
         target_deck_id = cur.lastrowid  # type: ignore[assignment]
     else:

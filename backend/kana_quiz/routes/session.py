@@ -1748,7 +1748,7 @@ def _save_alternates(
             """
             INSERT OR IGNORE INTO word_alternates
               (word_id, direction, alternate, source, added_at)
-            VALUES (?, ?, ?, 'gemini', datetime('now'))
+            VALUES (?, ?, ?, 'gemini', ?)
             """,
-            (word_id, direction, cleaned),
+            (word_id, direction, cleaned, pins.sql_now()),
         )
