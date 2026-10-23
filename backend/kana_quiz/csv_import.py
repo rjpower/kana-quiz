@@ -20,6 +20,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from kana_quiz import pins
 from kana_quiz.task_state import CARD_TASKS
 
 REQUIRED_COLUMNS = ("kana", "english")
@@ -207,7 +208,7 @@ def import_csv(
         raise ValueError(f"CSV missing required columns: {missing}")
 
     inserted = updated = skipped = 0
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = pins.now().isoformat()
 
     conn.execute("BEGIN")
     try:

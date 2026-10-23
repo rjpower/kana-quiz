@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal
 
+from kana_quiz import pins
 from kana_quiz.models import Word
 from kana_quiz.schemas import Direction
 
@@ -634,15 +635,18 @@ def generate_sentence(word: Word, *, model: str = DEFAULT_MODEL) -> Sentence:
         kanji=word.kanji or "(none)",
         english=word.english,
     )
-    resp = client.models.generate_content(  # type: ignore[attr-defined]
-        model=model,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            temperature=0.7,
-        ),
-    )
-    text = (resp.text or "").strip()
+    def call() -> str:
+        resp = client.models.generate_content(  # type: ignore[attr-defined]
+            model=model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.7,
+            ),
+        )
+        return (resp.text or "").strip()
+
+    text = pins.ask_model("sentence", model, call)
     data = json.loads(text)
     japanese = str(data["japanese"])
     target_form = str(data.get("target_form", "") or "").strip()
@@ -711,18 +715,21 @@ def resolve_term(term: str, *, taken: tuple[str, ...] = (), model: str = DEFAULT
     prompt = _ENTRY_TEMPLATE.format(term=term, taken=note)
     # A refusal from Google (quota, billing, an outage) is the same to the
     # caller as a missing key: the term cannot be resolved right now.
-    try:
-        resp = client.models.generate_content(  # type: ignore[attr-defined]
-            model=model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                temperature=0.2,
-            ),
-        )
-    except Exception as exc:
-        raise GeminiUnavailable(f"Gemini refused the request: {exc}") from exc
-    data = json.loads((resp.text or "").strip())
+    def call() -> str:
+        try:
+            resp = client.models.generate_content(  # type: ignore[attr-defined]
+                model=model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.2,
+                ),
+            )
+        except Exception as exc:
+            raise GeminiUnavailable(f"Gemini refused the request: {exc}") from exc
+        return (resp.text or "").strip()
+
+    data = json.loads(pins.ask_model("term", model, call))
     kana = str(data.get("kana", "") or "").strip()
     english = str(data.get("english", "") or "").strip()
     if not kana or not english:
@@ -752,15 +759,18 @@ def annotate_sentence(
         english=word.english,
         japanese=japanese,
     )
-    resp = client.models.generate_content(  # type: ignore[attr-defined]
-        model=model,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            temperature=0.4,
-        ),
-    )
-    data = json.loads((resp.text or "").strip())
+    def call() -> str:
+        resp = client.models.generate_content(  # type: ignore[attr-defined]
+            model=model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.4,
+            ),
+        )
+        return (resp.text or "").strip()
+
+    data = json.loads(pins.ask_model("annotate", model, call))
     target_form = str(data.get("target_form", "") or "").strip()
     if target_form and target_form not in japanese:
         target_form = ""
@@ -1096,7 +1106,7 @@ def grade_semantic(
         },
     )
 
-    try:
+    def call() -> str:
         resp = client.models.generate_content(  # type: ignore[attr-defined]
             model=model,
             contents=prompt,
@@ -1117,7 +1127,10 @@ def grade_semantic(
                 http_options=types.HttpOptions(timeout=_GRADE_TIMEOUT_MS),
             ),
         )
-        text = (resp.text or "").strip()
+        return (resp.text or "").strip()
+
+    try:
+        text = pins.ask_model("grade", model, call)
         data = json.loads(text)
         verdict = data["verdict"]
         if verdict not in ("correct", "accept", "incorrect"):
@@ -1279,7 +1292,7 @@ def grade_translation(
         },
     )
 
-    try:
+    def call() -> str:
         resp = client.models.generate_content(  # type: ignore[attr-defined]
             model=model,
             contents=prompt,
@@ -1295,7 +1308,10 @@ def grade_translation(
                 http_options=types.HttpOptions(timeout=_GRADE_TIMEOUT_MS),
             ),
         )
-        text = (resp.text or "").strip()
+        return (resp.text or "").strip()
+
+    try:
+        text = pins.ask_model("translation", model, call)
         data = json.loads(text)
         verdict = data["verdict"]
         if verdict not in ("correct", "accept", "incorrect"):

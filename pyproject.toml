@@ -31,5 +31,5 @@ packages = ["backend/kana_quiz"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["backend"]
+pythonpath = ["backend", "tests"]
 addopts = "-ra"

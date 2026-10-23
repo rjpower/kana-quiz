@@ -1,10 +1,10 @@
 """Deck CRUD endpoints."""
 
 import sqlite3
-from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
+from kana_quiz import pins
 from kana_quiz.db import get_conn
 from kana_quiz.schemas import (
     DeckIn,
@@ -58,7 +58,7 @@ def _stats_for(
         """,
         (deck_id, *CARD_TASKS),
     ).fetchone()["n"]
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = pins.now().isoformat()
     due_count = conn.execute(
         """
         SELECT COUNT(*) AS n FROM task_state ts

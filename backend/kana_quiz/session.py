@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
+from kana_quiz import pins
 from kana_quiz.grading import gloss_core
 from kana_quiz.models import Word, is_katakana_only, word_from_row
 from kana_quiz.task_state import (
@@ -66,7 +67,7 @@ MATURE_INTERVAL_DAYS = 14.0
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return pins.now()
 
 
 def _mora_count(kana: str) -> int:
@@ -245,6 +246,49 @@ SENTENCE_LISTEN_TASK = SupplementalTaskConfig(
 def _hydrate_word(conn: sqlite3.Connection, word_id: int) -> Word:
     row = conn.execute("SELECT * FROM words WHERE id = ?", (word_id,)).fetchone()
     return word_from_row(row)
+
+
+def _unseen_word(
+    conn: sqlite3.Connection,
+    excl_clause: str,
+    excl_params: tuple,
+    deck_clause: str,
+    deck_params: tuple,
+    rng: random.Random,
+) -> sqlite3.Row | None:
+    """The next word with no introduced recall row, or ``None``.
+
+    Lowest deck level first. Within a level a deck whose pick_order is
+    'listed', and every sentence, comes in id order after the randomly
+    ordered words; a random tiebreak draws one number per candidate in id
+    order, so a pinned generator picks the same word.
+    """
+    rows = conn.execute(
+        f"""
+        SELECT w.id AS id,
+               COALESCE(d.level, 999) AS level,
+               CASE WHEN w.kind = 'sentence' OR d.pick_order = 'listed'
+                    THEN w.id END AS listed
+          FROM words w
+          LEFT JOIN decks d ON d.id = w.deck_id
+         WHERE w.ignored_at IS NULL
+           AND NOT EXISTS (
+           SELECT 1 FROM task_state ts
+            WHERE ts.word_id = w.id AND ts.task IN ('en2ja', 'ja2en')
+              AND ts.introduced_at IS NOT NULL
+         ){excl_clause}{deck_clause}
+         ORDER BY w.id
+        """,
+        (*excl_params, *deck_params),
+    ).fetchall()
+    if not rows:
+        return None
+    keyed = [
+        ((r["level"], r["listed"] is not None, r["listed"] or 0, rng.random()), r["id"])
+        for r in rows
+    ]
+    word_id = min(keyed)[1]
+    return conn.execute("SELECT * FROM words WHERE id = ?", (word_id,)).fetchone()
 
 
 def pick_next_card(
@@ -449,25 +493,9 @@ def pick_next_card(
     # until the user answers. A word that was dealt into a prefetch buffer and
     # never reached the screen therefore stays in this pool instead of being
     # stranded with rows nothing will ever query.
+    rng = pins.new_rng()
     new_word_row = (
-        conn.execute(
-            f"""
-            SELECT w.* FROM words w
-             LEFT JOIN decks d ON d.id = w.deck_id
-             WHERE w.ignored_at IS NULL
-               AND NOT EXISTS (
-               SELECT 1 FROM task_state ts
-                WHERE ts.word_id = w.id AND ts.task IN ('en2ja', 'ja2en')
-                  AND ts.introduced_at IS NOT NULL
-             ){new_excl_clause}{deck_clause}
-             ORDER BY COALESCE(d.level, 999) ASC,
-                      CASE WHEN w.kind = 'sentence' OR d.pick_order = 'listed'
-                           THEN w.id END,
-                      RANDOM()
-             LIMIT 1
-            """,
-            (*new_excl_params, *deck_params),
-        ).fetchone()
+        _unseen_word(conn, new_excl_clause, new_excl_params, deck_clause, deck_params, rng)
         if mode == "new" or NEW_WORD_BACKLOG_LIMIT <= 0 or backlog < NEW_WORD_BACKLOG_LIMIT
         else None
     )
@@ -1117,12 +1145,20 @@ def _tag_candidates(
 
 
 def _random_candidates(
-    conn: sqlite3.Connection, target: Word, exclude_ids: set[int]
+    conn: sqlite3.Connection, target: Word, exclude_ids: set[int], rng: random.Random
 ) -> list[Word]:
-    rows = conn.execute(
-        "SELECT * FROM words WHERE id != ? AND kind = 'word' ORDER BY RANDOM() LIMIT 20",
-        (target.id,),
-    ).fetchall()
+    """Up to 20 words drawn from every other word, in id order before the draw."""
+    ids = [
+        r["id"]
+        for r in conn.execute(
+            "SELECT id FROM words WHERE id != ? AND kind = 'word' ORDER BY id", (target.id,)
+        ).fetchall()
+    ]
+    chosen = rng.sample(ids, min(20, len(ids)))
+    rows = [
+        conn.execute("SELECT * FROM words WHERE id = ?", (word_id,)).fetchone()
+        for word_id in chosen
+    ]
     return [word_from_row(r) for r in rows if r["id"] not in exclude_ids]
 
 
@@ -1183,7 +1219,7 @@ def build_choices(
     Any shortfall is backfilled with recent-review words and finally random
     words so we always return a length-4 choice list even on a sparse deck.
     """
-    rng = rng or random.Random()
+    rng = rng or pins.new_rng()
 
     quota = _quota_for(target_interval_days, direction)
     picked: dict[int, Word] = {}
@@ -1264,14 +1300,14 @@ def build_choices(
             _take(same_pos(recent_words), 3 - len(picked), picked, rng, used_labels, label_of)
 
     if len(picked) < 3:
-        random_pool = _random_candidates(conn, target, exclude_ids={target.id, *picked})
+        random_pool = _random_candidates(conn, target, {target.id, *picked}, rng)
         _take(same_pos(random_pool), 3 - len(picked), picked, rng, used_labels, label_of)
 
     # Last-resort cross-POS fill when the deck simply doesn't have enough
     # matching-POS candidates (e.g. user has imported only one verb).
     if len(picked) < 3:
         _take(
-            _random_candidates(conn, target, exclude_ids={target.id, *picked}),
+            _random_candidates(conn, target, {target.id, *picked}, rng),
             3 - len(picked),
             picked,
             rng,

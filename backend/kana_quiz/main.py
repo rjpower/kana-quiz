@@ -17,6 +17,7 @@ This is the mode the Docker image uses so the container ships a single port.
 import asyncio
 import logging
 import os
+import random
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -34,13 +35,19 @@ api_logger = logging.getLogger("kana_quiz.api")
 # usual culprit is the synchronous Gemini grade on /api/session/answer).
 SLOW_REQUEST_MS = 1000.0
 
+# ``KANA_PINS=1`` lets a request pin its clock, seed and model answers
+# through headers (see ``kana_quiz.pins``). ``KANA_RECORD`` names a JSONL
+# file that receives every API request with its pins and its response.
+PINS_FROM_HEADERS = os.environ.get("KANA_PINS") == "1"
+RECORD_PATH = Path(os.environ["KANA_RECORD"]) if os.environ.get("KANA_RECORD") else None
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from kana_quiz import auth as auth_module
-from kana_quiz import gemini, tts
+from kana_quiz import gemini, pins, tts
 from kana_quiz.db import init_schema
 from kana_quiz.routes import audio, decks, import_, session, stats, words
 
@@ -102,6 +109,40 @@ def create_app() -> FastAPI:
             if not auth_module.is_authed(request):
                 return JSONResponse({"detail": "unauthorized"}, status_code=401)
         return await call_next(request)
+
+    @app.middleware("http")
+    async def pin_request(request: Request, call_next):
+        if not request.url.path.startswith("/api/"):
+            return await call_next(request)
+        held = pins.from_headers(request.headers) if PINS_FROM_HEADERS else pins.Pins()
+        if RECORD_PATH is None:
+            pins.install(held)
+            return await call_next(request)
+        if held.now is None:
+            held.now = pins.now()
+        if held.seed is None:
+            held.seed = random.getrandbits(32)
+        pins.install(held)
+        body = await request.body()
+        response = await call_next(request)
+        chunks = [chunk async for chunk in response.body_iterator]
+        payload = b"".join(chunks)
+        pins.record(
+            RECORD_PATH,
+            held,
+            method=request.method,
+            target=request.url.path + (f"?{request.url.query}" if request.url.query else ""),
+            content_type=request.headers.get("content-type"),
+            body=body,
+            status=response.status_code,
+            response=payload,
+        )
+        return Response(
+            content=payload,
+            status_code=response.status_code,
+            headers=dict(response.headers),
+            media_type=response.media_type,
+        )
 
     @app.middleware("http")
     async def api_timing(request: Request, call_next):

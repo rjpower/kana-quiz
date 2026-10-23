@@ -61,10 +61,6 @@ JITTER_FRACTION = float(os.environ.get("KANA_REVIEW_JITTER_FRACTION", "0.15"))
 JITTER_MAX_HOURS = float(os.environ.get("KANA_REVIEW_JITTER_MAX_HOURS", "6"))
 JITTER_MIN_INTERVAL_DAYS = 1.0
 
-# Shared generator for production scheduling. Tests inject their own seeded
-# ``random.Random`` (or pass ``rng=None`` to disable jitter entirely) so the
-# scheduler stays deterministic under test.
-review_rng = random.Random()
 
 
 def jitter_seconds(interval_days: float, rng: random.Random) -> float:
@@ -124,7 +120,7 @@ def schedule(
             scale the ease bonus.
         rng: Source of due-time jitter. ``None`` (the default) disables
             jitter, keeping the result deterministic — production passes
-            :data:`review_rng`; tests seed their own or leave it off.
+            the request's ``pins.new_rng()``; tests seed their own or leave it off.
 
     Returns:
         A new :class:`SrsState` with updated fields — ``prev`` is not mutated.

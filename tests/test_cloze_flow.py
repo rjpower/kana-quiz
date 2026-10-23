@@ -13,6 +13,8 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+from dice import FixedDice
+
 
 def _seed_only_card(
     db: Path,
@@ -156,7 +158,7 @@ def _force_test_model(monkeypatch) -> None:
     seed the cache under a stable 'test-model' so a config-drift
     elsewhere doesn't shift what we're testing against.
     """
-    from kana_quiz import gemini
+    from kana_quiz import gemini, pins
     from kana_quiz.routes import session as routes_session
     monkeypatch.setattr(gemini, "DEFAULT_MODEL", "test-model")
     monkeypatch.setattr(routes_session, "CLOZE_INTERLEAVE_PROBABILITY", 1.0)
@@ -313,12 +315,12 @@ def test_cloze_interleaver_can_yield_to_recall(
     loaded_client: TestClient, db_path: Path, monkeypatch
 ) -> None:
     """Cloze should not monopolize /next when the interleave dice miss."""
-    from kana_quiz import gemini
+    from kana_quiz import gemini, pins
     from kana_quiz.routes import session as routes_session
 
     monkeypatch.setattr(gemini, "DEFAULT_MODEL", "test-model")
     monkeypatch.setattr(routes_session, "CLOZE_INTERLEAVE_PROBABILITY", 0.35)
-    monkeypatch.setattr(routes_session.random, "random", lambda: 0.99)
+    monkeypatch.setattr(pins, "new_rng", lambda: FixedDice(0.99))
 
     q0 = loaded_client.get("/api/session/next").json()
     word_id = q0["word_id"]

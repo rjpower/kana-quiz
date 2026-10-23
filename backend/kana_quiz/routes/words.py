@@ -1,10 +1,10 @@
 """Per-word management endpoints: quick add, ignore/unignore, the gloss corpus."""
 
 import sqlite3
-from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 
+from kana_quiz import pins
 from kana_quiz import gemini, tts
 from kana_quiz.db import get_conn
 from kana_quiz.schemas import QuickAddIn, QuickAddOut
@@ -134,7 +134,7 @@ def ignore_word(
     row = conn.execute("SELECT id FROM words WHERE id = ?", (word_id,)).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="word not found")
-    now = datetime.now(timezone.utc).isoformat()
+    now = pins.now().isoformat()
     conn.execute(
         "UPDATE words SET ignored_at = ? WHERE id = ?", (now, word_id)
     )

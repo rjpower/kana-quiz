@@ -3,7 +3,6 @@
 import json
 import logging
 import os
-import random
 import hashlib
 import sqlite3
 import time
@@ -12,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 
+from kana_quiz import pins
 from kana_quiz import gemini
 from kana_quiz.db import get_conn
 from kana_quiz.grading import (
@@ -53,7 +53,6 @@ from kana_quiz.srs import (
     MATURITY_ORDER,
     SrsState,
     classify_maturity,
-    review_rng,
     schedule,
 )
 from kana_quiz.task_state import (
@@ -352,7 +351,7 @@ def _build_cloze_choice_question(
         target,
         direction="en2ja",
         target_interval_days=pick.interval_days,
-        rng=random.Random(),
+        rng=pins.new_rng(),
     )
     # A choice grid needs a full set of four. build_choices only returns fewer
     # on a deck with <4 usable words — rather than render a broken 2x2 grid (or
@@ -759,7 +758,7 @@ def _log_gemini_grade(
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                datetime.now(timezone.utc).isoformat(),
+                pins.now().isoformat(),
                 gemini.GRADER_MODEL,
                 latency_ms,
                 word_id,
@@ -888,9 +887,9 @@ def _record_task_result(
     latency_factor = (
         payload.latency_ms / window_ms if payload.latency_ms is not None else None
     )
-    now = datetime.now(timezone.utc)
+    now = pins.now()
     prev, introduced_at = _srs_from_row(state_row, now)
-    nxt = schedule(prev, outcome, now, latency_factor=latency_factor, rng=review_rng)  # type: ignore[arg-type]
+    nxt = schedule(prev, outcome, now, latency_factor=latency_factor, rng=pins.new_rng())  # type: ignore[arg-type]
 
     # Maturity before/after, so the client can toast the new bucket and only
     # celebrate a genuine promotion. "Introduced" has to be read off the row as
@@ -998,6 +997,7 @@ def _build_next_question(
     batch (bulk). ``prefer_direction`` biases the recall pick toward one direction
     (see :func:`pick_next_card`) so callers can keep the session's directions mixed.
     """
+    rng = pins.new_rng()
     # Type-in cloze track: the top cloze rung. A word that has graduated here
     # prefers it over selection cloze, so it's checked first. Recall mastery
     # gates entry into the cloze family but each cloze lane carries its own SRS
@@ -1007,7 +1007,7 @@ def _build_next_question(
         and deck_id is None
         and "cloze" in allowed
         and has_due_cloze(conn)
-        and random.random() < CLOZE_INTERLEAVE_PROBABILITY
+        and rng.random() < CLOZE_INTERLEAVE_PROBABILITY
     ):
         cp = pick_cloze_card(conn)
         if cp is not None and cp.word.id not in exclude_ids:
@@ -1022,7 +1022,7 @@ def _build_next_question(
         and deck_id is None
         and "cloze_choice" in allowed
         and has_due_cloze_choice(conn)
-        and random.random() < CLOZE_CHOICE_INTERLEAVE_PROBABILITY
+        and rng.random() < CLOZE_CHOICE_INTERLEAVE_PROBABILITY
     ):
         ccp = pick_cloze_choice_card(conn)
         if ccp is not None and ccp.word.id not in exclude_ids:
@@ -1039,7 +1039,7 @@ def _build_next_question(
         and deck_id is None
         and "sentence_listen" in allowed
         and has_due_listening(conn)
-        and random.random() < LISTENING_INTERLEAVE_PROBABILITY
+        and rng.random() < LISTENING_INTERLEAVE_PROBABILITY
     ):
         lp = pick_listening_card(conn)
         if lp is not None and lp.word.id not in exclude_ids:
@@ -1091,7 +1091,7 @@ def _build_next_question(
                 audio_url=sentence_audio_url(target.id, cached.japanese),
             )
 
-    rng = random.Random()
+    rng = pins.new_rng()
     prompt = target.english if direction == "en2ja" else target.kana
 
     type_window = _type_window_ms(_expected_keystrokes(direction, target))
@@ -1273,7 +1273,7 @@ def drill_question(
         # 404 so the client's drill loop skips it instead of drilling it.
         raise HTTPException(status_code=404, detail="word not found or ignored")
     target = word_from_row(row)
-    rng = random.Random()
+    rng = pins.new_rng()
     chosen_dir: Direction = direction or ("en2ja" if rng.random() < 0.5 else "ja2en")
     prompt = target.english if chosen_dir == "en2ja" else target.kana
     cs = conn.execute(

@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
+from kana_quiz import pins
 from kana_quiz import gemini, tts
 from kana_quiz.db import db_path, get_conn
 from kana_quiz.schemas import (
@@ -86,7 +87,7 @@ def client_log(body: ClientLogIn) -> dict:
 
 
 def _summary(conn: sqlite3.Connection) -> Stats:
-    now = datetime.now(timezone.utc)
+    now = pins.now()
     now_iso = now.isoformat()
     seven_days_ago_iso = (now - timedelta(days=7)).isoformat()
 
@@ -168,7 +169,7 @@ def _overview(conn: sqlite3.Connection, tz_offset: int = 0) -> StatsOverview:
 
     ``tz_offset`` is the client's minutes behind UTC (JavaScript's
     ``getTimezoneOffset``), so "today" starts at the learner's midnight."""
-    now = datetime.now(timezone.utc)
+    now = pins.now()
     now_iso = now.isoformat()
     local_midnight = (now - timedelta(minutes=tz_offset)).replace(
         hour=0, minute=0, second=0, microsecond=0

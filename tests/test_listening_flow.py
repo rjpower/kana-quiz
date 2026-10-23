@@ -15,8 +15,9 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from kana_quiz import gemini
+from kana_quiz import gemini, pins
 from kana_quiz.routes import session as routes_session
+from dice import FixedDice
 
 
 def _seed_audio(db: Path, text: str) -> None:
@@ -189,7 +190,7 @@ def test_interleaver_returns_listening_when_dice_under_threshold(
     _seed_audio(db_path, "これは犬です。")
 
     # Force the dice to fall below the 0.2 threshold.
-    monkeypatch.setattr(routes_session.random, "random", lambda: 0.1)
+    monkeypatch.setattr(pins, "new_rng", lambda: FixedDice(0.1))
 
     nxt = loaded_client.get("/api/session/next").json()
     assert nxt["mode"] == "sentence_listen", nxt
@@ -214,7 +215,7 @@ def test_listening_prefetch_excludes_current_word(
         english="This is a dog.",
     )
     _seed_audio(db_path, "これは犬です。")
-    monkeypatch.setattr(routes_session.random, "random", lambda: 0.0)
+    monkeypatch.setattr(pins, "new_rng", lambda: FixedDice(0.0))
 
     nxt = loaded_client.get("/api/session/next").json()
     assert nxt["mode"] == "sentence_listen", nxt
@@ -236,7 +237,7 @@ def test_interleaver_skips_listening_when_dice_above_threshold(
     _seed_sentence(db_path, word_id, japanese="これは犬です。")
     _seed_audio(db_path, "これは犬です。")
 
-    monkeypatch.setattr(routes_session.random, "random", lambda: 0.5)
+    monkeypatch.setattr(pins, "new_rng", lambda: FixedDice(0.5))
 
     nxt = loaded_client.get("/api/session/next").json()
     assert nxt["mode"] != "sentence_listen", nxt
@@ -269,7 +270,7 @@ def _serve_listening_card(
         db_path, word_id, japanese="これは犬です。", english=english,
     )
     _seed_audio(db_path, "これは犬です。")
-    monkeypatch.setattr(routes_session.random, "random", lambda: 0.0)
+    monkeypatch.setattr(pins, "new_rng", lambda: FixedDice(0.0))
     nxt = client.get("/api/session/next").json()
     assert nxt["mode"] == "sentence_listen", nxt
     return nxt
@@ -447,7 +448,7 @@ def test_listening_correct_caches_alternates_and_short_circuits_repeat(
     conn.commit()
     conn.close()
     _seed_task_state(db_path, nxt["word_id"], ease=2.8, reps=4)
-    monkeypatch.setattr(routes_session.random, "random", lambda: 0.0)
+    monkeypatch.setattr(pins, "new_rng", lambda: FixedDice(0.0))
     nxt2 = loaded_client.get("/api/session/next").json()
     assert nxt2["mode"] == "sentence_listen"
 
