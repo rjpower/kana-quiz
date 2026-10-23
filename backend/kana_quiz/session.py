@@ -1254,7 +1254,7 @@ def build_choices(
     # words the user actually mixed up this round. Capped (not all 3) so genuine
     # phonetic/semantic distractors still get a slot — it's a mix, not a swap.
     if prefer_ids:
-        pool_ids = [i for i in prefer_ids if i != target.id]
+        pool_ids = sorted(i for i in prefer_ids if i != target.id)
         if pool_ids:
             placeholders = ",".join("?" for _ in pool_ids)
             rows = conn.execute(
