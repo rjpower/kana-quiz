@@ -1,3 +1,5 @@
+import { api } from './api'
+
 // Web Audio playback helper.
 //
 // Why not <audio>: in iOS standalone PWA mode, HTMLAudioElement output is
@@ -101,5 +103,5 @@ export function versionedAudioUrl(url: string): string {
 }
 
 export function wordAudioUrl(wordId: number): string {
-  return versionedAudioUrl(`/api/audio/word/${wordId}`)
+  return versionedAudioUrl(api.audio.wordUrl(wordId))
 }

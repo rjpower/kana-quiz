@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { api } from '../api'
 import { onMounted, ref } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 
@@ -40,16 +41,7 @@ async function submit() {
   busy.value = true
   error.value = null
   try {
-    const resp = await fetch('/api/words/quick', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: term }),
-    })
-    if (!resp.ok) {
-      const detail = await resp.json().catch(() => ({ detail: resp.statusText }))
-      throw new Error(detail.detail ?? `HTTP ${resp.status}`)
-    }
-    added.value.unshift((await resp.json()) as Added)
+    added.value.unshift(await api.words.quick(term))
     text.value = ''
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)

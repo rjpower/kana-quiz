@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ApiError, api } from '../api'
 // Diagnostics page for figuring out why audio doesn't play in installed-PWA
 // mode even though it works in a regular browser tab.
 //
@@ -220,17 +221,17 @@ async function gatherStorage() {
 
 async function probeApi() {
   const out: KV[] = []
-  try {
-    const r = await fetch('/api/session/upcoming?n=1', { credentials: 'include' })
-    out.push({ k: 'GET /api/session/upcoming', v: `${r.status} ${r.statusText}` })
-  } catch (e) {
-    out.push({ k: 'GET /api/session/upcoming', v: `error: ${(e as Error).message}` })
-  }
-  try {
-    const r = await fetch('/api/stats', { credentials: 'include' })
-    out.push({ k: 'GET /api/stats', v: `${r.status} ${r.statusText}` })
-  } catch (e) {
-    out.push({ k: 'GET /api/stats', v: `error: ${(e as Error).message}` })
+  const probes: Array<[string, () => Promise<unknown>]> = [
+    ['GET /api/session/upcoming', () => api.session.upcoming(1, 1)],
+    ['GET /api/stats', () => api.stats.summary()],
+  ]
+  for (const [k, call] of probes) {
+    try {
+      await call()
+      out.push({ k, v: 'ok' })
+    } catch (e) {
+      out.push({ k, v: e instanceof ApiError ? `${e.status} ${e.detail}` : `error: ${(e as Error).message}` })
+    }
   }
   apiProbe.value = out
 }
@@ -271,13 +272,12 @@ async function unlock() {
 }
 
 async function fetchFirstWordId(): Promise<number | null> {
-  const r = await fetch('/api/session/upcoming?n=1', { credentials: 'include' })
-  if (!r.ok) {
-    logLine(`upcoming returned ${r.status}`)
+  try {
+    return (await api.session.upcoming(1, 1))[0] ?? null
+  } catch (e) {
+    logLine(`upcoming failed: ${(e as Error).message}`)
     return null
   }
-  const j = await r.json()
-  return (j.word_ids?.[0] as number | undefined) ?? null
 }
 
 async function testShared() {
@@ -286,7 +286,7 @@ async function testShared() {
   if (!id) return
   const a = ensureShared()
   try {
-    const resp = await fetch(`/api/audio/word/${id}`)
+    const resp = await fetch(api.audio.wordUrl(id))
     logLine(`fetched audio status=${resp.status}`)
     if (!resp.ok) return
     const blob = await resp.blob()
@@ -304,7 +304,7 @@ async function testFresh() {
   const id = await fetchFirstWordId()
   if (!id) return
   try {
-    const resp = await fetch(`/api/audio/word/${id}`)
+    const resp = await fetch(api.audio.wordUrl(id))
     if (!resp.ok) return
     const blob = await resp.blob()
     const audio = new Audio(URL.createObjectURL(blob))
@@ -330,7 +330,7 @@ async function testWebAudio() {
       await ctx.resume()
       logLine(`resumed ctx, state=${ctx.state}`)
     }
-    const resp = await fetch(`/api/audio/word/${id}`)
+    const resp = await fetch(api.audio.wordUrl(id))
     if (!resp.ok) return
     const buf = await resp.arrayBuffer()
     const decoded = await ctx.decodeAudioData(buf)
@@ -347,13 +347,7 @@ async function testWebAudio() {
 async function gatherServerDebug() {
   serverDebugError.value = null
   try {
-    const r = await fetch('/api/stats/debug', { credentials: 'include' })
-    if (!r.ok) {
-      serverDebugError.value = `HTTP ${r.status} ${r.statusText}`
-      serverDebug.value = null
-      return
-    }
-    serverDebug.value = await r.json()
+    serverDebug.value = await api.stats.debug()
   } catch (e) {
     serverDebugError.value = (e as Error).message
     serverDebug.value = null

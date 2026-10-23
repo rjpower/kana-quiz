@@ -1,3 +1,5 @@
+import { api } from './api'
+
 // Module-level cache for the deck's English gloss corpus.
 //
 // Used by TypeInput's ja2en autocomplete. We deduplicate concurrent
@@ -12,9 +14,7 @@ export async function getGlosses(): Promise<string[]> {
   if (inflight) return inflight
   inflight = (async () => {
     try {
-      const resp = await fetch('/api/glosses')
-      if (!resp.ok) throw new Error(`glosses fetch failed: ${resp.status}`)
-      cache = (await resp.json()) as string[]
+      cache = await api.words.glosses()
       return cache
     } finally {
       inflight = null

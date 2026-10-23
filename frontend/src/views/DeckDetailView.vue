@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { api } from '../api'
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 
@@ -79,12 +80,9 @@ async function toggleSprint() {
   profileBusy.value = true
   const next = meta.value.profile === 'sprint' ? 'standard' : 'sprint'
   try {
-    const resp = await fetch(`/api/decks/${meta.value.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ profile: next }),
-    })
-    if (resp.ok) meta.value = (await resp.json()) as DeckMeta
+    meta.value = await api.decks.update<DeckMeta>(meta.value.id, { profile: next })
+  } catch {
+    /* the toggle stays where it was */
   } finally {
     profileBusy.value = false
   }
@@ -157,19 +155,16 @@ async function load() {
   loading.value = true
   error.value = null
   try {
-    const [metaResp, wordsResp] = await Promise.all([
-      fetch('/api/decks'),
-      fetch(`/api/decks/${deckId.value}/words`),
+    const [all, listed] = await Promise.all([
+      api.decks.list<DeckMeta>(),
+      api.decks.words<DeckWord>(deckId.value),
     ])
-    if (!metaResp.ok) throw new Error(`decks HTTP ${metaResp.status}`)
-    if (!wordsResp.ok) throw new Error(`words HTTP ${wordsResp.status}`)
-    const all = (await metaResp.json()) as DeckMeta[]
     meta.value = all.find((d) => d.id === deckId.value) ?? null
     if (!meta.value) {
       error.value = 'Deck not found.'
       return
     }
-    words.value = (await wordsResp.json()) as DeckWord[]
+    words.value = listed
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -219,14 +214,10 @@ async function toggleIgnore(word: DeckWord) {
   // Optimistic flip so the toggle feels instant on slow connections.
   word.ignored = !wasIgnored
   try {
-    const url = `/api/words/${word.id}/ignore`
-    const resp = await fetch(url, { method: wasIgnored ? 'DELETE' : 'POST' })
-    if (resp.status !== 204) {
-      // Roll back optimism.
-      word.ignored = wasIgnored
-      throw new Error(`HTTP ${resp.status}`)
-    }
+    await api.words.ignore(word.id, !wasIgnored)
   } catch (e) {
+    // Roll back optimism.
+    word.ignored = wasIgnored
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
     toggleBusy.value[word.id] = false
@@ -255,16 +246,7 @@ async function saveEdit() {
     return
   }
   try {
-    const resp = await fetch(`/api/decks/${meta.value.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, level: draftLevel.value }),
-    })
-    if (!resp.ok) {
-      const body = await resp.json().catch(() => ({ detail: resp.statusText }))
-      editError.value = body.detail ?? `HTTP ${resp.status}`
-      return
-    }
+    await api.decks.update<DeckMeta>(meta.value.id, { name, level: draftLevel.value })
     editing.value = false
     await load()
   } catch (e) {
@@ -283,16 +265,8 @@ async function deleteDeck() {
     : `Delete deck "${meta.value.name}"? This cannot be undone.`
   if (!confirm(warning)) return
   try {
-    const url = total > 0
-      ? `/api/decks/${meta.value.id}?force=true`
-      : `/api/decks/${meta.value.id}`
-    const resp = await fetch(url, { method: 'DELETE' })
-    if (resp.status === 204) {
-      await router.push('/decks')
-      return
-    }
-    const body = await resp.json().catch(() => ({ detail: resp.statusText }))
-    editError.value = body.detail ?? `HTTP ${resp.status}`
+    await api.decks.delete(meta.value.id, total > 0)
+    await router.push('/decks')
   } catch (e) {
     editError.value = e instanceof Error ? e.message : String(e)
   }

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { api } from '../api'
 import { onMounted, ref } from 'vue'
 
 interface GraderEntry {
@@ -31,10 +32,7 @@ async function load() {
   loading.value = true
   error.value = null
   try {
-    const resp = await fetch(`/api/gemini_log?limit=${limit.value}`)
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-    const body = await resp.json()
-    entries.value = body.entries as GraderEntry[]
+    entries.value = await api.graderLog<GraderEntry>(limit.value)
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {

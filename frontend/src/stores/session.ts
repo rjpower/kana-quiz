@@ -1,96 +1,8 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
+import { api } from '../api'
 import { prefetchAudioUrl, versionedAudioUrl, wordAudioUrl } from '../audio'
 import { useToastStore } from './toasts'
-
-// Mobile networks blip constantly. Every fetch in this store goes through
-// a timeout+retry wrapper so a single dropped packet can't stall the UI
-// indefinitely — without it, the answer-then-prefetch flow can wedge with
-// `locked=true` forever, ignoring every subsequent tap.
-const FETCH_TIMEOUT_MS = 6000
-const FETCH_RETRY_ATTEMPTS = 4
-const FETCH_RETRY_BASE_MS = 300
-// A client-perceived round trip slower than this is worth reporting even when
-// it eventually succeeds — the server answers in <300ms, so the time went to
-// the network or a stalled connection that server-side timing can't see.
-const SLOW_FETCH_MS = 2000
-
-// Report a fetch anomaly to the backend so client-side hangs land in the same
-// log stream as the server's request timing. Best-effort and silent — telemetry
-// must never break the quiz flow, and this call deliberately bypasses
-// fetchWithRetry so it can't recurse.
-function reportClientFetch(payload: {
-  url: string
-  outcome: 'slow' | 'retry' | 'timeout' | 'failed'
-  duration_ms: number
-  attempts: number
-  detail?: string
-}) {
-  try {
-    console.warn('[kana-quiz] fetch anomaly', payload)
-    fetch('/api/client_log', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      keepalive: true,
-    }).catch(() => {})
-  } catch {
-    /* ignore */
-  }
-}
-
-// Query strings can carry per-question payloads; the path alone is enough to
-// locate the slow endpoint, so strip them before logging.
-const cleanUrl = (u: string) => u.split('?')[0]
-
-async function fetchWithRetry(
-  url: string,
-  init: RequestInit = {},
-  attempts = FETCH_RETRY_ATTEMPTS,
-): Promise<Response> {
-  const started = performance.now()
-  let lastErr: unknown
-  let timedOut = false
-  for (let i = 0; i < attempts; i++) {
-    const ctrl = new AbortController()
-    const timer = setTimeout(() => {
-      timedOut = true
-      ctrl.abort()
-    }, FETCH_TIMEOUT_MS)
-    try {
-      const resp = await fetch(url, { ...init, signal: ctrl.signal })
-      clearTimeout(timer)
-      // 5xx + 408/429 are worth a retry; other 4xx are terminal.
-      const retriable = resp.status >= 500 || resp.status === 408 || resp.status === 429
-      if (!retriable) {
-        const elapsed = Math.round(performance.now() - started)
-        // A success that needed a retry, or that took seconds, is the hang the
-        // user felt even though the request ultimately went through.
-        if (i > 0) {
-          reportClientFetch({ url: cleanUrl(url), outcome: 'retry', duration_ms: elapsed, attempts: i + 1 })
-        } else if (elapsed >= SLOW_FETCH_MS) {
-          reportClientFetch({ url: cleanUrl(url), outcome: 'slow', duration_ms: elapsed, attempts: 1 })
-        }
-        return resp
-      }
-      lastErr = new Error(`http ${resp.status}`)
-    } catch (e) {
-      clearTimeout(timer)
-      lastErr = e
-    }
-    if (i < attempts - 1) {
-      await new Promise((r) => setTimeout(r, FETCH_RETRY_BASE_MS * 2 ** i))
-    }
-  }
-  reportClientFetch({
-    url: cleanUrl(url),
-    outcome: timedOut ? 'timeout' : 'failed',
-    duration_ms: Math.round(performance.now() - started),
-    attempts,
-    detail: lastErr instanceof Error ? lastErr.message : String(lastErr),
-  })
-  throw lastErr instanceof Error ? lastErr : new Error('fetch failed')
-}
 
 export type Direction = 'en2ja' | 'ja2en'
 export type QuestionMode = 'mc' | 'type' | 'cloze' | 'cloze_choice' | 'sentence_listen'
@@ -775,9 +687,7 @@ export const useSessionStore = defineStore('session', () => {
   async function prefetchUpcomingAudio() {
     if (audioDisabled.value) return
     try {
-      const resp = await fetchWithRetry(`/api/session/upcoming?n=${activeRoundSize.value}`, {}, 2)
-      if (!resp.ok) return
-      const ids: number[] = (await resp.json()).word_ids ?? []
+      const ids = await api.session.upcoming(activeRoundSize.value)
       // Fire-and-forget: warm the Web Audio decoded-buffer cache so
       // playAudioUrl is instant on the first hit.
       for (const id of ids) {
@@ -788,21 +698,19 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  function nextUrl(excludeId?: number): string {
-    const params = new URLSearchParams()
-    if (excludeId) params.set('exclude', String(excludeId))
-    params.set('modes', modesParam())
-    params.set('reveal', autoRevealNewCards.value ? '1' : '0')
-    params.set('pool', sessionMode.value)
-    if (deckId.value != null) params.set('deck', String(deckId.value))
-    return `/api/session/next?${params.toString()}`
+  // What every question request carries: the enabled modes, whether a new
+  // card is revealed, which pool the round draws from, and the deck.
+  function asking() {
+    return {
+      modes: modesParam(),
+      reveal: (autoRevealNewCards.value ? '1' : '0') as '0' | '1',
+      pool: sessionMode.value,
+      ...(deckId.value != null ? { deck: deckId.value } : {}),
+    }
   }
 
-  async function fetchQuestion(excludeId?: number): Promise<NextQuestion | null> {
-    const resp = await fetchWithRetry(nextUrl(excludeId))
-    if (resp.status === 204) return null
-    if (!resp.ok) throw new Error(`next failed: ${resp.status}`)
-    return (await resp.json()) as NextQuestion
+  function fetchQuestion(excludeId?: number): Promise<NextQuestion | null> {
+    return api.session.next({ ...asking(), ...(excludeId ? { exclude: excludeId } : {}) })
   }
 
   // Word_ids the client already holds — the on-screen card plus everything
@@ -824,17 +732,6 @@ export const useSessionStore = defineStore('session', () => {
     return Array.from(new Set([...heldIds(), ...recentServed]))
   }
 
-  function batchUrl(excludeIds: number[], n: number): string {
-    const params = new URLSearchParams()
-    params.set('n', String(n))
-    if (excludeIds.length) params.set('exclude', excludeIds.join(','))
-    params.set('modes', modesParam())
-    params.set('reveal', autoRevealNewCards.value ? '1' : '0')
-    params.set('pool', sessionMode.value)
-    if (deckId.value != null) params.set('deck', String(deckId.value))
-    return `/api/session/batch?${params.toString()}`
-  }
-
   // Top the buffer back up to BATCH_SIZE in the background. Best-effort and
   // single-flight: if it fails or the round moves on, fetchNext falls back to a
   // cold fetch. Appends are re-checked against the *current* hand so a slow
@@ -845,14 +742,17 @@ export const useSessionStore = defineStore('session', () => {
     if (need <= 0) return
     refillPromise = (async () => {
       try {
-        const resp = await fetchWithRetry(batchUrl(excludeIds(), need), {}, 2)
-        if (resp.status === 204 || !resp.ok) return
-        const batch = (await resp.json()) as { questions: NextQuestion[] }
+        const held0 = excludeIds()
+        const questions = await api.session.batch({
+          ...asking(),
+          n: need,
+          ...(held0.length ? { exclude: held0.join(',') } : {}),
+        })
         // A refill that lands after the round ended / entered the drill must not
         // seed the buffer for a session that's over.
         if (!roundStarted.value || roundComplete.value || drillMode.value) return
         const held = new Set(excludeIds())
-        for (const q of batch.questions) {
+        for (const q of questions) {
           if (held.has(q.word_id)) continue
           prefetchBuffer.value.push(q)
           held.add(q.word_id)
@@ -891,15 +791,16 @@ export const useSessionStore = defineStore('session', () => {
     try {
       if (prefetchBuffer.value.length === 0) {
         // Cold: pull a fresh batch synchronously before we can show anything.
-        const resp = await fetchWithRetry(batchUrl(excludeIds(), BATCH_SIZE))
-        if (resp.status !== 204 && resp.ok) {
-          const batch = (await resp.json()) as { questions: NextQuestion[] }
-          const held = new Set(excludeIds())
-          for (const q of batch.questions) {
-            if (held.has(q.word_id)) continue
-            prefetchBuffer.value.push(q)
-            held.add(q.word_id)
-          }
+        const held = new Set(excludeIds())
+        const questions = await api.session.batch({
+          ...asking(),
+          n: BATCH_SIZE,
+          ...(held.size ? { exclude: [...held].join(',') } : {}),
+        }, 4)
+        for (const q of questions) {
+          if (held.has(q.word_id)) continue
+          prefetchBuffer.value.push(q)
+          held.add(q.word_id)
         }
         // Degenerate deck (only the just-answered card is due): the batch
         // excludes it and comes back empty, so re-serve the soonest card the
@@ -1046,18 +947,11 @@ export const useSessionStore = defineStore('session', () => {
     // round-end can drain the queue before showing the summary. Retries
     // matter here: a dropped POST silently loses an SRS update and the
     // user re-sees the word later thinking it never moved.
-    const post = fetchWithRetry('/api/session/answer', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        word_id: q.word_id,
-        direction: q.direction,
-        latency_ms: latency,
-        ...body,
-      }),
-    }).then(async (resp) => {
-      if (!resp.ok) throw new Error(`answer failed: ${resp.status}`)
-      return (await resp.json()) as AnswerResult
+    const post = api.session.answer({
+      word_id: q.word_id,
+      direction: q.direction,
+      latency_ms: latency,
+      ...body,
     })
     pendingAnswers.push(post)
     void post.catch(() => {}).finally(() => {
@@ -1331,7 +1225,7 @@ export const useSessionStore = defineStore('session', () => {
     if (!current.value) return
     if (drillMode.value) return
     const id = current.value.word_id
-    void fetchWithRetry(`/api/words/${id}/ignore`, { method: 'POST' }, 2).catch(() => {})
+    void api.words.ignore(id, true, 2).catch(() => {})
     // Drop any buffered question that points at the same word so the ignored
     // word can't resurface from the prefetch queue.
     prefetchBuffer.value = prefetchBuffer.value.filter((q) => q.word_id !== id)
@@ -1358,13 +1252,12 @@ export const useSessionStore = defineStore('session', () => {
   ): Promise<NextQuestion | null> {
     // Feed the OTHER misses as the confuser pool (server tops up if it's thin).
     const pool = drillPoolIds.value.filter((id) => id !== wordId)
-    const poolParam = pool.length ? `&pool_ids=${pool.join(',')}` : ''
     try {
-      const resp = await fetchWithRetry(
-        `/api/session/drill?word_id=${wordId}&direction=${direction}${poolParam}`,
-      )
-      if (!resp.ok) return null
-      return (await resp.json()) as NextQuestion
+      return await api.session.drill({
+        word_id: wordId,
+        direction,
+        ...(pool.length ? { pool_ids: pool.join(',') } : {}),
+      })
     } catch {
       return null
     }
@@ -1627,9 +1520,7 @@ export const useSessionStore = defineStore('session', () => {
     // loading the setup screen must never silently pull a new card into
     // rotation now that new words are introduced only via the explicit button.
     try {
-      const resp = await fetchWithRetry('/api/decks', {}, 2)
-      if (!resp.ok) return
-      const summary = (await resp.json()) as Array<{ word_count?: number }>
+      const summary = await api.decks.list<{ word_count?: number }>(2)
       deckEmpty.value = summary.reduce((a, d) => a + (d.word_count ?? 0), 0) === 0
     } catch {
       // If we can't even probe, leave deckEmpty as-is and let the user try.
@@ -1672,13 +1563,8 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   async function fetchMatchBatch(n: number, excludeIds: number[]): Promise<MatchTile[]> {
-    const params = new URLSearchParams()
-    params.set('n', String(n))
-    if (excludeIds.length) params.set('exclude_ids', excludeIds.join(','))
     try {
-      const resp = await fetchWithRetry(`/api/session/match-batch?${params.toString()}`, {}, 3)
-      if (!resp.ok) return []
-      return ((await resp.json()).tiles ?? []) as MatchTile[]
+      return await api.session.matchBatch(n, excludeIds)
     } catch {
       return []
     }
@@ -1722,21 +1608,14 @@ export const useSessionStore = defineStore('session', () => {
   ) {
     // Reuse the unchanged answer path: an MC-shaped payload so the backend
     // advances SRS exactly as a real multiple-choice answer would.
-    const post = fetchWithRetry('/api/session/answer', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        word_id: wordId,
-        direction,
-        mode: 'mc',
-        chosen_index: correct ? 0 : 1,
-        correct_index: 0,
-        timed_out: false,
-        latency_ms: latencyMs,
-      }),
-    }).then((r) => {
-      if (!r.ok) throw new Error(`answer failed: ${r.status}`)
-      return r.json()
+    const post = api.session.answer({
+      word_id: wordId,
+      direction,
+      mode: 'mc',
+      chosen_index: correct ? 0 : 1,
+      correct_index: 0,
+      timed_out: false,
+      latency_ms: latencyMs,
     })
     pendingAnswers.push(post)
     void post.catch(() => {}).finally(() => {

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { api } from '../api'
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 
@@ -55,20 +56,9 @@ async function saveLevel(deck: Deck, event: Event) {
   levelBusy.value[deck.id] = true
   delete levelError.value[deck.id]
   try {
-    const resp = await fetch(`/api/decks/${deck.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ level }),
-    })
-    if (!resp.ok) {
-      const body = await resp.json().catch(() => ({ detail: resp.statusText }))
-      levelError.value[deck.id] = body.detail ?? `HTTP ${resp.status}`
-      input.value = String(deck.level)
-      return
-    }
     // Keep the row where it is: the server orders decks by level, and
     // re-sorting under the cursor would move the input the user just used.
-    deck.level = ((await resp.json()) as Deck).level
+    deck.level = (await api.decks.update<Deck>(deck.id, { level })).level
   } catch (e) {
     levelError.value[deck.id] = e instanceof Error ? e.message : String(e)
     input.value = String(deck.level)
@@ -87,17 +77,7 @@ async function saveOrder(deck: Deck, event: Event) {
   orderBusy.value[deck.id] = true
   delete levelError.value[deck.id]
   try {
-    const resp = await fetch(`/api/decks/${deck.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pick_order }),
-    })
-    if (!resp.ok) {
-      const body = await resp.json().catch(() => ({}))
-      levelError.value[deck.id] = body.detail ?? `HTTP ${resp.status}`
-      return
-    }
-    deck.pick_order = ((await resp.json()) as Deck).pick_order
+    deck.pick_order = (await api.decks.update<Deck>(deck.id, { pick_order })).pick_order
   } catch (e) {
     levelError.value[deck.id] = e instanceof Error ? e.message : String(e)
   } finally {
@@ -109,9 +89,7 @@ async function load() {
   loading.value = true
   error.value = null
   try {
-    const resp = await fetch('/api/decks')
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-    decks.value = (await resp.json()) as Deck[]
+    decks.value = await api.decks.list<Deck>()
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -130,16 +108,7 @@ async function createDeck() {
   createBusy.value = true
   createError.value = null
   try {
-    const resp = await fetch('/api/decks', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, level: newLevel.value }),
-    })
-    if (!resp.ok) {
-      const detail = await resp.json().catch(() => ({ detail: resp.statusText }))
-      createError.value = detail.detail ?? `HTTP ${resp.status}`
-      return
-    }
+    await api.decks.create<Deck>({ name, level: newLevel.value })
     newName.value = ''
     newLevel.value = 5
     await load()

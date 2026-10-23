@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ApiError, api } from '../api'
 import { onMounted, ref } from 'vue'
 import { playAudioUrl, unlockAudio, wordAudioUrl } from '../audio'
 
@@ -46,20 +47,19 @@ async function loadSentence() {
   sentenceLoading.value = true
   sentenceError.value = null
   try {
-    const resp = await fetch(`/api/words/${word.value.id}/sentence`)
-    if (!resp.ok) {
-      sentenceError.value = resp.status === 503
-        ? 'Sentence generation isn\'t configured.'
-        : `Couldn\'t load (${resp.status}).`
-      return
-    }
-    const data = await resp.json()
+    const data = await api.words.sentence(word.value.id)
     sentence.value = {
       japanese: data.japanese,
       english: data.english,
       mnemonic: data.mnemonic || '',
     }
   } catch (e) {
+    if (e instanceof ApiError) {
+      sentenceError.value = e.status === 503
+        ? 'Sentence generation isn\'t configured.'
+        : `Couldn\'t load (${e.status}).`
+      return
+    }
     sentenceError.value = (e as Error).message
   } finally {
     sentenceLoading.value = false
@@ -69,9 +69,7 @@ async function loadSentence() {
 async function load() {
   error.value = null
   try {
-    const resp = await fetch('/api/stats/detailed')
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-    const data = await resp.json()
+    const data = await api.stats.detailed<{ words?: WordDetail[] }>()
     const wantId = Number(props.id)
     const found = (data.words ?? []).find((w: WordDetail) => w.id === wantId)
     if (!found) throw new Error('word not found')

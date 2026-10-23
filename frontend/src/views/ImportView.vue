@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { api } from '../api'
 import { computed, onMounted, ref } from 'vue'
 
 interface ImportReport {
@@ -34,9 +35,7 @@ const newDeckLevel = ref(5)
 async function loadDecks() {
   decksLoading.value = true
   try {
-    const resp = await fetch('/api/decks')
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-    decks.value = (await resp.json()) as Deck[]
+    decks.value = await api.decks.list<Deck>()
     if (decks.value.length > 0 && !selectedDeck.value) {
       selectedDeck.value = String(decks.value[0].id)
     }
@@ -121,12 +120,7 @@ async function submit() {
     } else {
       body.append('deck_id', selectedDeck.value)
     }
-    const resp = await fetch('/api/import', { method: 'POST', body })
-    if (!resp.ok) {
-      const detail = await resp.json().catch(() => ({ detail: resp.statusText }))
-      throw new Error(detail.detail ?? `HTTP ${resp.status}`)
-    }
-    report.value = (await resp.json()) as ImportReport
+    report.value = await api.importCsv(body)
     // Refresh deck stats so word_count reflects the import.
     void loadDecks()
   } catch (e) {

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { api } from '../api'
 import { computed, onMounted, ref } from 'vue'
 
 interface Stats {
@@ -55,9 +56,7 @@ const filter = ref<Maturity | 'all'>('all')
 async function load() {
   error.value = null
   try {
-    const resp = await fetch('/api/stats/detailed')
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-    data.value = (await resp.json()) as DetailedStats
+    data.value = await api.stats.detailed<DetailedStats>()
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
   }

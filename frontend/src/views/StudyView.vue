@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ApiError, api, type SentenceOut } from '../api'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import ChoiceCard from '../components/ChoiceCard.vue'
@@ -75,17 +76,7 @@ const deckCounts = ref<DeckCounts | null>(null)
 
 async function loadDeckCounts(id: number) {
   try {
-    const resp = await fetch('/api/decks')
-    if (!resp.ok) return
-    const decks = (await resp.json()) as {
-      id: number
-      name: string
-      profile: string
-      word_count: number
-      new_count: number
-      due_count: number
-      archived_count: number
-    }[]
+    const decks = await api.decks.list()
     const deck = decks.find((d) => d.id === id)
     if (!deck) return
     store.setDeck(id, deck.name)
@@ -169,8 +160,7 @@ const speedLabel = computed(
 
 async function loadOverview() {
   try {
-    const resp = await fetch(`/api/stats/overview?tz_offset=${new Date().getTimezoneOffset()}`)
-    if (resp.ok) overview.value = (await resp.json()) as Overview
+    overview.value = await api.stats.overview<Overview>(new Date().getTimezoneOffset())
   } catch {
     // Non-fatal — the summary is decorative; the user can still hit Start.
   }
@@ -226,19 +216,23 @@ async function fetchSentence(wordId: number) {
   if (existing && (existing.japanese || existing.loading)) return
   sentences.set(wordId, { loading: true })
   try {
-    const resp = await fetch(`/api/words/${wordId}/sentence`)
-    if (!resp.ok) {
-      if (resp.status === 503) {
+    let data: SentenceOut
+    try {
+      data = await api.words.sentence(wordId)
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 503) {
         // Gemini key isn't configured — flip the global mute so we stop
         // showing the loading/error UI for every subsequent card.
         sentenceUnsupported.value = true
         sentences.delete(wordId)
         return
       }
-      sentences.set(wordId, { error: `Couldn\'t load (${resp.status}).` })
-      return
+      if (e instanceof ApiError) {
+        sentences.set(wordId, { error: `Couldn\'t load (${e.status}).` })
+        return
+      }
+      throw e
     }
-    const data = await resp.json()
     sentences.set(wordId, {
       japanese: data.japanese,
       japaneseRuby: data.japanese_ruby || [],

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { api } from '../api'
 import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
@@ -12,17 +13,13 @@ async function onSubmit() {
   error.value = null
   submitting.value = true
   try {
-    const resp = await fetch('/api/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: password.value }),
-    })
-    if (resp.status === 401) {
+    const status = await api.auth.login(password.value)
+    if (status === 401) {
       error.value = 'Wrong password.'
       return
     }
-    if (!resp.ok) {
-      error.value = `Login failed (${resp.status}).`
+    if (status < 200 || status >= 300) {
+      error.value = `Login failed (${status}).`
       return
     }
     const next = (route.query.next as string) || '/study'
