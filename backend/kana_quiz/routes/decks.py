@@ -283,7 +283,7 @@ def list_ignored(
         """
         SELECT id, kana, english, kanji, ignored_at FROM words
          WHERE deck_id = ? AND ignored_at IS NOT NULL AND archived_at IS NULL
-         ORDER BY ignored_at DESC
+         ORDER BY ignored_at DESC, id ASC
         """,
         (deck_id,),
     ).fetchall()

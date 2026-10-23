@@ -40,6 +40,21 @@ STATE_TABLES = {
 }
 
 
+# Columns SQLite holds as REAL. `json_agg` prints a whole Postgres number
+# without a point and `json.dumps` prints a Python float with one, so both
+# dumps coerce these before they are written and one diff reads both.
+FLOAT_COLUMNS = {"ease", "interval_days"}
+
+
+def _as_floats(state: dict) -> dict:
+    for rows in state.values():
+        for row in rows:
+            for column in FLOAT_COLUMNS & set(row):
+                if row[column] is not None:
+                    row[column] = float(row[column])
+    return state
+
+
 def _body(entry: dict) -> bytes | None:
     raw = entry.get("body")
     if raw is None:
@@ -129,7 +144,9 @@ def dump_state(db: Path, out: Path) -> None:
     state = {
         name: [dict(r) for r in conn.execute(query).fetchall()] for name, query in STATE_TABLES.items()
     }
-    out.write_text(json.dumps(state, ensure_ascii=False, indent=1, sort_keys=True, default=str))
+    out.write_text(
+        json.dumps(_as_floats(state), ensure_ascii=False, indent=1, sort_keys=True, default=str)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -237,7 +254,8 @@ def as_op(entry: dict) -> tuple[str, dict] | None:
 def as_route_answer(entry: dict, status: int, payload: bytes) -> tuple[int, bytes]:
     """An op's answer in the shape the Python route wrote, so one diff reads both.
 
-    A 204 route answers ``null``; a fault's ``message`` is the route's
+    A 204 route answers ``null``; a 201 route answers 200, because an op's
+    answer carries no status of its own; a fault's ``message`` is the route's
     ``detail``; an audio op answers ``{mime, b64}`` where the route sent bytes.
     """
     if status >= 400:
@@ -248,10 +266,22 @@ def as_route_answer(entry: dict, status: int, payload: bytes) -> tuple[int, byte
             return status, payload
     if entry["status"] == 204 and payload.strip() == b"null":
         return 204, b""
+    if entry["status"] == 201 and status == 200:
+        return 201, payload
     if entry["target"].startswith("/api/audio/"):
         answered = json.loads(payload)
         return status, base64.b64decode(answered["b64"])
     return status, payload
+
+
+def _recorded(entry: dict) -> bytes:
+    """The recorded response body, as bytes."""
+    raw = entry.get("response")
+    if raw is None:
+        return b""
+    if "b64" in raw:
+        return base64.b64decode(raw["b64"])
+    return raw["text"].encode("utf-8")
 
 
 def sign_in(base_url: str, username: str, password: str) -> str:
@@ -274,14 +304,19 @@ def dump_state_pg(url: str, out: Path) -> None:
     """The same tables as :func:`dump_state`, read from Postgres through psql."""
     import subprocess
 
+    # `PSQL` names the client, so a checkout with no local psql can point at
+    # one inside the database's own container.
+    psql = os.environ.get("PSQL", "psql").split()
     state = {}
     for name, query in STATE_TABLES.items():
         wrapped = f"SELECT coalesce(json_agg(row_to_json(t)), '[]'::json) FROM ({query}) t"
         got = subprocess.run(
-            ["psql", url, "-Atc", wrapped], check=True, capture_output=True, text=True
+            [*psql, url, "-Atc", wrapped], check=True, capture_output=True, text=True
         ).stdout
         state[name] = json.loads(got)
-    out.write_text(json.dumps(state, ensure_ascii=False, indent=1, sort_keys=True, default=str))
+    out.write_text(
+        json.dumps(_as_floats(state), ensure_ascii=False, indent=1, sort_keys=True, default=str)
+    )
 
 
 def main() -> None:
@@ -307,7 +342,11 @@ def main() -> None:
             entry = _current[0]
             mapped = as_op(entry)
             if mapped is None:
-                return entry["status"], _body(entry) or b""
+                # A route the site answers another way: the sign-in status,
+                # which the kit's own `system.me` answers. Nothing is sent, and
+                # the record stands in for the answer so the entry compares
+                # against itself.
+                return entry["status"], _recorded(entry)
             op, op_input = mapped
             op_input = {
                 **op_input,
