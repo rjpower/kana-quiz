@@ -92,6 +92,7 @@ def main() -> None:
     os.environ["KANA_QUIZ_DB"] = str(db_copy)
     os.environ["KANA_RECORD"] = str(args.out)
     os.environ["KANA_TTS_DISABLED"] = "1"
+    os.environ["KANA_PREFETCH_DISABLED"] = "1"
     os.environ["GEMINI_API_KEY"] = "recorded"
     os.environ.pop("KANA_AUTH_PASSWORD", None)
     os.environ.pop("KANA_API_TOKEN", None)

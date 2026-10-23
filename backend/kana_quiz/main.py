@@ -55,14 +55,18 @@ from kana_quiz.routes import audio, decks, import_, session, stats, words
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_schema()
-    tts_task = asyncio.create_task(tts.prefetch_worker())
-    sentence_task = asyncio.create_task(gemini.prefetch_worker())
+    # A recording or replay run sets KANA_PREFETCH_DISABLED=1 so no
+    # background worker writes a cache row between two requests.
+    tasks: list[asyncio.Task] = []
+    if os.environ.get("KANA_PREFETCH_DISABLED") != "1":
+        tasks.append(asyncio.create_task(tts.prefetch_worker()))
+        tasks.append(asyncio.create_task(gemini.prefetch_worker()))
     try:
         yield
     finally:
-        for task in (tts_task, sentence_task):
+        for task in tasks:
             task.cancel()
-        for task in (tts_task, sentence_task):
+        for task in tasks:
             try:
                 await task
             except (asyncio.CancelledError, Exception):
